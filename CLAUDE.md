@@ -16,6 +16,7 @@ Alle Logik — Kalibrierung, Schaltentscheidungen, Schwellwerte — liegt im Mai
 - Der User lernt aktiv — neue Konzepte kurz erklären wenn sie eingesetzt werden
 - **Kein mehrfacher Umbau** — saubere Lösung sofort, auch wenn der Sprint dadurch größer wird
 - **Überblick hat Priorität** — lieber früh warnen wenn ein Schritt einen späteren Umbau erzwingt
+- **Code nur auf explizite Aufforderung** — erklären, diskutieren, Optionen aufzeigen; kein Code ohne explizite Anfrage
 
 ---
 
@@ -103,23 +104,39 @@ MainUnit kennt: Kalibrierfaktor, Tara, Einheit, Schwellwert, Hysterese
 ## REST API
 
 ### GET /sensors
-Rohwerte aller angeschlossenen Sensoren.
+Rohwerte aller angeschlossenen Sensoren. Jeder Wert trägt seinen eigenen `valid`-Flag — die MainUnit muss keine eigene Plausibilitätsprüfung machen.
 
 ```json
 {
-  "sensor:0": { "value": 58500 },
-  "sensor:1": { "value": 217 }
+  "sensor:0": { "value": 58500.0, "valid": true },
+  "sensor:1": { "value": null,    "valid": false }
 }
 ```
 
+- Schlüssel immer `sensor:N` (fortlaufend, fix zur Compile-Zeit)
+- `value` ist `float` — gilt für alle Sensortypen (HX711-Rohwert, DHT22-Temperatur, etc.)
+- Lesen erfolgt ausschließlich on-demand beim Request, kein Background-Sampling
+
 ### GET /status
-Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboarding.
+Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboarding. Enthält auch die interne Chiptemperatur des ESP32-C3.
 
 ```json
 {
   "mac": "AA:BB:CC:DD:EE:FF",
   "uptime": 3600,
-  "rssi": -65
+  "rssi": -65,
+  "chip_temp": 42.5
+}
+```
+
+### GET /info
+Selbstbeschreibung des Knotens — welcher Sensortyp liegt hinter welcher ID. Wird von der MainUnit einmalig beim Onboarding abgefragt; der User weist den Sensoren danach ihre Funktion zu.
+
+```json
+{
+  "sensor:0": "HX711",
+  "sensor:1": "DHT22_TEMP",
+  "sensor:2": "DHT22_HUMIDITY"
 }
 ```
 
@@ -167,9 +184,57 @@ Webserver und AP laufen **ausschließlich** im Provisioning-Modus.
 
 ---
 
+## Code-Architektur
+
+### SensorBase (NVI-Pattern)
+`include/SensorBase.h` — abstrakte Basisklasse, ausschließlich Header.
+
+- `read(float& value)` — **public, non-virtual** — einziger Einstiegspunkt; ruft intern `isValid()` und `readRaw()` auf
+- `isValid()` — **private pure virtual** — prüft ob Sensor antwortet
+- `readRaw(float& buffer)` — **private pure virtual** — schreibt Rohwert in Buffer
+- `id()` — **public non-virtual** — gibt `uint8_t _id` zurück (gesetzt per Konstruktor)
+- Virtueller Destruktor: `virtual ~SensorBase() = default`
+
+Konvention: private Member mit `_`-Prefix (`_id`, `_scale`).
+
+### SensorManager
+`include/SensorManager.h` / `src/SensorManager.cpp` — Namespace, keine Klasse.
+
+- `constexpr uint8_t MAX_SENSORS = 8`
+- `void initSensors()` — Hardware-Init, kein Rückgabewert (Validierung erfolgt beim Lesen)
+- `bool getSensorDataJson(char* buf, size_t len)` — baut JSON on-demand, gibt false bei Fehler
+- Konkrete Sensoren werden per `#ifdef SENSOR_HX711` etc. aktiviert
+- Internes Array `SensorBase* _sensors[MAX_SENSORS]`
+
+### HX711Sensor
+`include/HX711Sensor.h` / `src/HX711Sensor.cpp`
+
+- Konstruktor: `HX711Sensor(uint8_t dout, uint8_t sck, uint8_t id)`
+- `isValid()`: `return _scale.is_ready()`
+- `readRaw()`: `buffer = static_cast<float>(_scale.get_value())` — expliziter Cast, kein Magic-Number-Fehlercode
+- `set_scale()` ohne Argument → Rohwerte (Kalibrierung liegt in der MainUnit)
+
+### PlatformIO-Struktur
+```ini
+[lolin_c3_mini]          ← Basis, nicht buildbar
+    platform, board, framework, partitions, ArduinoJson, PIN_FACTORY_RESET
+
+[env:hx711]              ← konkrete Build-Konfiguration
+    extends = lolin_c3_mini
+    lib_deps: HX711
+    build_flags: SENSOR_HX711, HX711_DOUT, HX711_SCK
+```
+
+### Anwendungsfälle
+- **Waage**: 1x HX711 → `sensor:0`
+- **Terrariumbox**: 2–3x DHT22 (je Temp + Humidity = 2 Einträge) + Bodenfeuchte → bis zu 7 Einträge
+- **Chiptemperatur**: ESP32-C3 interner Sensor → `GET /status` (`chip_temp`), nicht in `/sensors`
+
+---
+
 ## Roadmap
 
-1. **HX711 + HTTP-Server** — Rohwerte über GET /sensors, GET /status, Digest Auth
+1. **HX711 + HTTP-Server** — GET /sensors, GET /status, GET /info, Digest Auth ← *aktuell*
 2. **Light Sleep** — zwischen Abfragen, WiFi-Assoziation aktiv
 3. **Provisioning-AP** — Factory Reset, HTML-Formular, NVS
 4. **NVS-Verschlüsselung** — Credentials sicher ablegen
