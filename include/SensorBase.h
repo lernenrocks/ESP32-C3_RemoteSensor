@@ -6,7 +6,7 @@
 class SensorBase
 {
 public:
-SensorBase(size_t p_id):_id(p_id){
+SensorBase(){
 }
 virtual ~SensorBase() = default;
     /**
@@ -20,14 +20,7 @@ virtual ~SensorBase() = default;
         return true;
         }
 
-    /**
-     * @brief returns the id of the sensor
-     * @return id of the sensor
-     */
-    uint8_t id(){return _id;}
-
     private:
-    uint8_t _id;
     virtual bool isValid()=0;
     virtual void readRaw(float & buffer)=0;
 };

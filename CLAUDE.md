@@ -22,9 +22,10 @@ Alle Logik — Kalibrierung, Schaltentscheidungen, Schwellwerte — liegt im Mai
 
 ## Nicht verhandelbare Regeln
 
-### Kein Heap — niemals
-- **Verboten**: `String`, `new`, `malloc`, `DynamicJsonDocument`, `.c_str()` auf temporärem `String`
+### Heap-Nutzung
+- **Verboten**: `String`, `malloc`, `DynamicJsonDocument`, `.c_str()` auf temporärem `String`
 - **Erlaubt**: `char[]` auf Stack, `StaticJsonDocument`, `snprintf`, `strlcpy`, `memcpy`
+- **`new` nur für Objekte die die gesamte Laufzeit leben** — kein `delete`, keine zyklische Allokation. Begründung: einmalige Allokation ohne Freigabe fragmentiert den Heap nicht. Typischer Anwendungsfall: Sensor-Objekte im SensorManager.
 
 ### Kein HTTPClient
 - Alle TCP-Kommunikation über `WiFiClient` direkt

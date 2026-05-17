@@ -1,7 +1,7 @@
 #include "HX711Sensor.h"
 
 
-HX711Sensor::HX711Sensor(uint8_t dout, uint8_t sck, uint8_t id) : SensorBase(id) {
+HX711Sensor::HX711Sensor(int dout, int sck) {
     _scale.begin(dout, sck);
     _scale.set_scale();
 }
@@ -9,5 +9,6 @@ HX711Sensor::HX711Sensor(uint8_t dout, uint8_t sck, uint8_t id) : SensorBase(id)
         return _scale.is_ready();
     }
     void HX711Sensor::readRaw(float & buffer){
-        buffer = static_cast<float>(_scale.get_value());
+        //! Increase averaging samples if values fluctuate; decrease if MainUnit TCP timeout is hit
+        buffer = static_cast<float>(_scale.get_value(3));
     }
