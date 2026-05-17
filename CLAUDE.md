@@ -3,8 +3,8 @@
 ## Was ist das hier?
 
 ESP32-C3 Super Mini Firmware für Remote-Sensorknoten im TerraControl-System.
-Der Knoten misst Rohwerte (z.B. HX711-Wägezelle) und liefert sie auf Anfrage an die MainUnit.
-Alle Logik — Kalibrierung, Schaltentscheidungen, Schwellwerte — liegt im MainUnit.
+Der Knoten kalibriert Sensorwerte selbst und liefert fertige Werte auf Anfrage an die MainUnit.
+Schaltentscheidungen und Schwellwerte liegen im MainUnit — Kalibrierung und Tara auf dem C3.
 
 **Zugehöriges Hauptprojekt**: [TerraControl](https://github.com/lernenrocks/TerraControl) (ESP32 MainUnit)
 
@@ -83,17 +83,18 @@ Rot    → E+   Schwarz → E-   Weiß → A-   Grün → A+
 
 ## Architektur
 
-### Prinzip: C3 ist dumm und reaktiv
+### Prinzip: C3 ist smarter Sensorknoten
 
 ```
-C3 misst Rohwert → liefert ihn auf Anfrage
-MainUnit kennt: Kalibrierfaktor, Tara, Einheit, Schwellwert, Hysterese
+C3 kalibriert → liefert fertigen Wert auf Anfrage
+MainUnit kennt: Schwellwert, Hysterese, Tara-Offset
 ```
 
 - Keine Schaltlogik auf dem C3
-- Keine Kalibrierung auf dem C3
-- Keine Einheiten auf dem C3
+- **Kalibrierung auf dem C3** — sensor-spezifische Parameter in NVS, sensor-spezifisches Webinterface im Provisioning
 - Pull/On-Demand: MainUnit fragt ab, C3 antwortet
+- C3 kann auch direkt von der Companion App angesprochen werden — unabhängig von der MainUnit
+- **Begründung**: Bei 50+ Sensortypen wäre die Kalibrierlogik in der MainUnit unwartbar; jede Sensorklasse kapselt ihre eigene Kalibrierung
 
 ### Betrieb
 - **Light Sleep** zwischen Abfragen: WiFi-Assoziation bleibt aktiv, eingehende TCP-Verbindung weckt den C3 sofort; spart Strom auch bei kabelgebundener Versorgung
@@ -105,18 +106,21 @@ MainUnit kennt: Kalibrierfaktor, Tara, Einheit, Schwellwert, Hysterese
 ## REST API
 
 ### GET /sensors
-Rohwerte aller angeschlossenen Sensoren. Jeder Wert trägt seinen eigenen `valid`-Flag — die MainUnit muss keine eigene Plausibilitätsprüfung machen.
+Kalibrierte Werte aller angeschlossenen Sensoren. Jeder Wert trägt seinen eigenen `valid`-Flag — die MainUnit muss keine eigene Plausibilitätsprüfung machen.
 
 ```json
 {
-  "sensor:0": { "value": 58500.0, "valid": true },
-  "sensor:1": { "value": null,    "valid": false }
+  "sensor:0": { "value": 4.2, "valid": true },
+  "sensor:1": { "value": null, "valid": false }
 }
 ```
 
 - Schlüssel immer `sensor:N` (fortlaufend, fix zur Compile-Zeit)
-- `value` ist `float` — gilt für alle Sensortypen (HX711-Rohwert, DHT22-Temperatur, etc.)
+- `value` ist `float` — kalibrierter Wert (kg, °C, %, etc.)
 - Lesen erfolgt ausschließlich on-demand beim Request, kein Background-Sampling
+
+### POST /calibrate
+Schreibt Kalibrierungsparameter in NVS und startet den Knoten neu. Gedacht für die Companion App — keine Live-Kalibrierung im laufenden Betrieb.
 
 ### GET /status
 Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboarding. Enthält auch die interne Chiptemperatur des ESP32-C3.
@@ -157,14 +161,15 @@ Selbstbeschreibung des Knotens — welcher Sensortyp liegt hinter welcher ID. Wi
 
 ## Provisioning / Factory Reset
 
-GPIO9 (BOOT-Taste) lang drücken → Factory Reset:
+GPIO9 (BOOT-Taste) lang drücken → Factory Reset (löscht Credentials UND Kalibrierung):
 
 1. C3 öffnet eigenen AP (`TerraControl-C3-AABBCC`)
 2. Webserver startet (nur in diesem Modus — kein permanenter Heap)
 3. User verbindet sich mit C3-AP, öffnet Browser
 4. HTML-Formular: MainUnit-AP-Credentials eingeben
-5. C3 speichert in NVS, bootet neu
-6. C3 verbindet sich mit MainUnit-AP → Normalbetrieb
+5. Sensor-spezifische Kalibrierungsschritte (je nach Sensortyp unterschiedlich)
+6. C3 speichert Credentials + Kalibrierung in NVS, bootet neu
+7. C3 verbindet sich mit MainUnit-AP → Normalbetrieb
 
 Webserver und AP laufen **ausschließlich** im Provisioning-Modus.
 
@@ -193,10 +198,10 @@ Webserver und AP laufen **ausschließlich** im Provisioning-Modus.
 - `read(float& value)` — **public, non-virtual** — einziger Einstiegspunkt; ruft intern `isValid()` und `readRaw()` auf
 - `isValid()` — **private pure virtual** — prüft ob Sensor antwortet
 - `readRaw(float& buffer)` — **private pure virtual** — schreibt Rohwert in Buffer
-- `id()` — **public non-virtual** — gibt `uint8_t _id` zurück (gesetzt per Konstruktor)
+- Kein `id()` — der Array-Index im SensorManager ist die ID (`sensor:0` = Index 0)
 - Virtueller Destruktor: `virtual ~SensorBase() = default`
 
-Konvention: private Member mit `_`-Prefix (`_id`, `_scale`).
+Konvention: private Member mit `_`-Prefix (`_scale`).
 
 ### SensorManager
 `include/SensorManager.h` / `src/SensorManager.cpp` — Namespace, keine Klasse.
@@ -210,10 +215,11 @@ Konvention: private Member mit `_`-Prefix (`_id`, `_scale`).
 ### HX711Sensor
 `include/HX711Sensor.h` / `src/HX711Sensor.cpp`
 
-- Konstruktor: `HX711Sensor(uint8_t dout, uint8_t sck, uint8_t id)`
+- Konstruktor: `HX711Sensor(int dout, int sck)`
 - `isValid()`: `return _scale.is_ready()`
-- `readRaw()`: `buffer = static_cast<float>(_scale.get_value())` — expliziter Cast, kein Magic-Number-Fehlercode
-- `set_scale()` ohne Argument → Rohwerte (Kalibrierung liegt in der MainUnit)
+- `readRaw()`: `buffer = static_cast<float>(_scale.get_value(3))` — 3 Messungen gemittelt (~300ms Blockzeit), expliziter Cast; wendet intern Kalibrierfaktor und Tara aus NVS an
+- Kalibrierungsparameter in NVS: Skalierungsfaktor + Tara
+- Anzahl Messungen anpassen wenn Werte schwanken (erhöhen) oder TCP-Timeout der MainUnit überschritten wird (reduzieren)
 
 ### PlatformIO-Struktur
 ```ini
@@ -223,8 +229,10 @@ Konvention: private Member mit `_`-Prefix (`_id`, `_scale`).
 [env:hx711]              ← konkrete Build-Konfiguration
     extends = lolin_c3_mini
     lib_deps: HX711
-    build_flags: SENSOR_HX711, HX711_DOUT, HX711_SCK
+    build_flags: SENSOR_HX711, HX711_DOUT, HX711_SCK, DEBUG
 ```
+
+`-D DEBUG` aktiviert die Serial-Ausgabe in `loop()` — im Produktions-Build weglassen.
 
 ### Anwendungsfälle
 - **Waage**: 1x HX711 → `sensor:0`
@@ -247,5 +255,5 @@ Konvention: private Member mit `_`-Prefix (`_id`, `_scale`).
 
 Der C3 verbindet sich mit dem **Soft-AP der MainUnit** (nicht mit dem Heimrouter).
 Die MainUnit identifiziert den C3 über seine **MAC-Adresse** — IP wird dynamisch über `syncApClients()` aktuell gehalten.
-TCP-Timeout auf MainUnit-Seite für C3-Requests: ~500ms (kein Wake-Delay da Light Sleep mit WiFi-Assoziation).
+TCP-Timeout auf MainUnit-Seite für C3-Requests: **~2000ms** — 500ms ist zu knapp wenn mehrere Sensoren mit Mittelung abgefragt werden (3 Sensoren × 3 Messungen × 100ms = 900ms + Overhead).
 `TCP_MAX_TIME` (5000ms global) gilt für Shellys — für C3 wird ein separater Timeout-Wert eingeführt.
