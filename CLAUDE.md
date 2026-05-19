@@ -96,6 +96,11 @@ MainUnit kennt: Schwellwert, Hysterese, Tara-Offset
 - C3 kann auch direkt von der Companion App angesprochen werden — unabhängig von der MainUnit
 - **Begründung**: Bei 50+ Sensortypen wäre die Kalibrierlogik in der MainUnit unwartbar; jede Sensorklasse kapselt ihre eigene Kalibrierung
 
+### Trennungsprinzip: Sensor vs. Umgebung
+- **Sensorspezifisch → C3**: alles was eine Eigenschaft des Sensors selbst ist (Skalierungsfaktor, Sensor-Nullpunkt, Dry/Wet-Werte)
+- **Umgebungsspezifisch → MainUnit**: alles was eine Eigenschaft der Anwendung ist (Tankgewicht, Schwellwerte, Hysterese)
+- Beispiel HX711: Sensor-Offset (leere Wägeplatte) → C3 / Tankgewicht (leerer Tank) → MainUnit
+
 ### Betrieb
 - **Light Sleep** zwischen Abfragen: WiFi-Assoziation bleibt aktiv, eingehende TCP-Verbindung weckt den C3 sofort; spart Strom auch bei kabelgebundener Versorgung
 - Kabelgebundene Stromversorgung
@@ -121,6 +126,25 @@ Kalibrierte Werte aller angeschlossenen Sensoren. Jeder Wert trägt seinen eigen
 
 ### POST /calibrate
 Schreibt Kalibrierungsparameter in NVS und startet den Knoten neu. Gedacht für die Companion App — keine Live-Kalibrierung im laufenden Betrieb.
+
+### GET /calibrationinfo
+Beschreibt welche Kalibrierungsparameter jeder Sensor benötigt. Wird einmalig beim Onboarding abgefragt — die Companion App baut das Kalibrierformular dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
+
+```json
+{
+  "sensor:0": {
+    "type": "HX711",
+    "calibration": [
+      {"key": "scale", "label": "Skalierungsfaktor"},
+      {"key": "offset", "label": "Sensor-Offset"}
+    ]
+  },
+  "sensor:1": {
+    "type": "DHT22_TEMP",
+    "calibration": []
+  }
+}
+```
 
 ### GET /status
 Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboarding. Enthält auch die interne Chiptemperatur des ESP32-C3.

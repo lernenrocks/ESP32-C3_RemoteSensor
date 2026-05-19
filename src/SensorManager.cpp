@@ -1,7 +1,11 @@
 #include "SensorManager.h"
 #include "SensorBase.h"
-#ifdef SENSOR_HX711
+#ifdef HX711_DHT22
 #include "HX711Sensor.h"
+#include <DHT.h>
+#include "DHT22Temperature.h"
+#include "DTH22Humidity.h"
+DHT dht(DHT22_DATA,DHT22);
 #endif
 
 namespace
@@ -72,10 +76,17 @@ namespace SensorManager
 
     void initSensors()
     {
-#ifdef SENSOR_HX711
+#ifdef HX711_DHT22
         if (!addSensor(new HX711Sensor(HX711_DOUT, HX711_SCK)))
         {
-            Serial.println("Sensor nicht initialisiert");
+            Serial.println("HX11 Sensor nicht initialisiert");
+        }
+        dht.begin();
+        if(!addSensor(new DHT22Temperature(&dht))){
+            Serial.println("DHT22 Temperatursensor nicht initialisiert");
+        }
+                if(!addSensor(new DHT22Humidity(&dht))){
+            Serial.println("DHT22 Temperatursensor nicht initialisiert");
         }
 #endif
     }
