@@ -5,9 +5,14 @@ DHT22Humidity::DHT22Humidity(DHT *dht){
 }
 
 bool DHT22Humidity::isValid(){
-    return !isnan(_dht->readTemperature());
+    return !isnan(_dht->readHumidity());
+}
+
+bool DHT22Humidity::getCalibrationJson(char *buffer, size_t len){
+    size_t written = snprintf(buffer,len,"[]");
+    return written <len;
 }
 
 void DHT22Humidity::readRaw(float &buffer){
-    buffer=_dht->readTemperature();
+    buffer=_dht->readHumidity();
 }

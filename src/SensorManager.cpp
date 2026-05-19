@@ -1,23 +1,22 @@
 #include "SensorManager.h"
 #include "SensorBase.h"
-#ifdef HX711_DHT22
 #include "HX711Sensor.h"
 #include <DHT.h>
 #include "DHT22Temperature.h"
 #include "DTH22Humidity.h"
-DHT dht(DHT22_DATA,DHT22);
-#endif
+
+DHT dht(DHT22_DATA, DHT22);
 
 namespace
 {
-    SensorBase *sensorArray[SensorManager::MAX_SENSORS];
+    SensorManager::SensorEntry sensorArray[SensorManager::MAX_SENSORS];
     uint8_t sensorCount = 0;
 
-    bool addSensor(SensorBase *sensor)
+    bool addSensor(SensorBase *sensor, const char *type)
     {
         if (sensorCount < SensorManager::MAX_SENSORS)
         {
-            sensorArray[sensorCount++] = sensor;
+            sensorArray[sensorCount++] = {sensor, type};
             return true;
         }
         return false;
@@ -40,7 +39,7 @@ namespace SensorManager
         for (size_t i = 0; i < sensorCount; i++)
         {
             float value = 0.0f;
-            bool valid = sensorArray[i]->read(value);
+            bool valid = sensorArray[i].sensor->read(value);
             char valueString[16];
             if (valid)
             {
@@ -76,18 +75,18 @@ namespace SensorManager
 
     void initSensors()
     {
-#ifdef HX711_DHT22
-        if (!addSensor(new HX711Sensor(HX711_DOUT, HX711_SCK)))
+        if (!addSensor(new HX711Sensor(HX711_DOUT, HX711_SCK), SensorType::HX711))
         {
-            Serial.println("HX11 Sensor nicht initialisiert");
+            Serial.println("[ERROR] HX711 sensor not initialized");
         }
         dht.begin();
-        if(!addSensor(new DHT22Temperature(&dht))){
-            Serial.println("DHT22 Temperatursensor nicht initialisiert");
+        if (!addSensor(new DHT22Temperature(&dht), SensorType::DHT22_TEMP))
+        {
+            Serial.println("[ERROR] DHT22 temperature sensor not initialized");
         }
-                if(!addSensor(new DHT22Humidity(&dht))){
-            Serial.println("DHT22 Temperatursensor nicht initialisiert");
+        if (!addSensor(new DHT22Humidity(&dht), SensorType::DHT22_HUM))
+        {
+            Serial.println("[ERROR] DHT22 humidity sensor not initialized");
         }
-#endif
     }
 }

@@ -9,6 +9,8 @@ class DHT22Humidity : public SensorBase{
     DHT22Humidity(DHT *dht);
     ~DHT22Humidity()=default;
 
+    bool getCalibrationJson(char *buffer, size_t len) override;
+
     private:
     DHT *_dht;
     bool isValid() override;

@@ -128,23 +128,27 @@ Kalibrierte Werte aller angeschlossenen Sensoren. Jeder Wert trägt seinen eigen
 Schreibt Kalibrierungsparameter in NVS und startet den Knoten neu. Gedacht für die Companion App — keine Live-Kalibrierung im laufenden Betrieb.
 
 ### GET /calibrationinfo
-Beschreibt welche Kalibrierungsparameter jeder Sensor benötigt. Wird einmalig beim Onboarding abgefragt — die Companion App baut das Kalibrierformular dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
+Beschreibt Sensortyp und Kalibrierungsschritte pro Sensor. Wird einmalig beim Onboarding abgefragt — die Companion App baut den Kalibrierungsworkflow dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
+
+Array-Index = Sensor-ID. Jeder Schritt hat `instruction` (Anweisung an den User) und `key` (NVS-Schlüssel). Optional `ref` — wenn vorhanden, zeigt die App ein Eingabefeld für den Referenzwert.
 
 ```json
-{
-  "sensor:0": {
+[
+  {
     "type": "HX711",
-    "calibration": [
-      {"key": "scale", "label": "Skalierungsfaktor"},
-      {"key": "offset", "label": "Sensor-Offset"}
+    "steps": [
+      { "instruction": "Place empty scale", "key": "offset" },
+      { "instruction": "Add known weight",  "key": "raw_at_weight", "ref": "ref_weight" }
     ]
   },
-  "sensor:1": {
+  {
     "type": "DHT22_TEMP",
-    "calibration": []
+    "steps": []
   }
-}
+]
 ```
+
+`scale` berechnet der C3 beim `POST /calibrate` selbst aus `raw_at_weight` und `ref_weight`.
 
 ### GET /status
 Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboarding. Enthält auch die interne Chiptemperatur des ESP32-C3.
@@ -155,17 +159,6 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
   "uptime": 3600,
   "rssi": -65,
   "chip_temp": 42.5
-}
-```
-
-### GET /info
-Selbstbeschreibung des Knotens — welcher Sensortyp liegt hinter welcher ID. Wird von der MainUnit einmalig beim Onboarding abgefragt; der User weist den Sensoren danach ihre Funktion zu.
-
-```json
-{
-  "sensor:0": "HX711",
-  "sensor:1": "DHT22_TEMP",
-  "sensor:2": "DHT22_HUMIDITY"
 }
 ```
 
@@ -247,16 +240,13 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 
 ### PlatformIO-Struktur
 ```ini
-[lolin_c3_mini]          ← Basis, nicht buildbar
-    platform, board, framework, partitions, ArduinoJson, PIN_FACTORY_RESET
-
-[env:hx711]              ← konkrete Build-Konfiguration
-    extends = lolin_c3_mini
-    lib_deps: HX711
-    build_flags: SENSOR_HX711, HX711_DOUT, HX711_SCK, DEBUG
+[env:lolin_c3_mini]      ← einzige Build-Konfiguration, flach ohne extends
+    platform, board, framework, partitions
+    lib_deps: ArduinoJson, HX711, DHT sensor library
+    build_flags: PIN_FACTORY_RESET, HX711_DOUT, HX711_SCK, DHT22_DATA
 ```
 
-`-D DEBUG` aktiviert die Serial-Ausgabe in `loop()` — im Produktions-Build weglassen.
+Keine Build-Flags für Sensortypen — der SensorManager kennt die Hardware direkt. Kein `#ifdef` für Sensorkonfiguration.
 
 ### Anwendungsfälle
 - **Waage**: 1x HX711 → `sensor:0`
@@ -267,7 +257,7 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 
 ## Roadmap
 
-1. **HX711 + HTTP-Server** — GET /sensors, GET /status, GET /info, Digest Auth ← *aktuell*
+1. **HX711 + HTTP-Server** — GET /sensors, GET /status, GET /calibrationinfo, Digest Auth ← *aktuell*
 2. **Light Sleep** — zwischen Abfragen, WiFi-Assoziation aktiv
 3. **Provisioning-AP** — Factory Reset, HTML-Formular, NVS
 4. **NVS-Verschlüsselung** — Credentials sicher ablegen

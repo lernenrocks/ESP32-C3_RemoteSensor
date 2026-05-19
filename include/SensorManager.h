@@ -1,20 +1,22 @@
 #pragma once
 #include <Arduino.h>
+#include "SensorBase.h"
 
-namespace SensorManager{
+namespace SensorType {
+    constexpr const char* HX711      = "HX711";
+    constexpr const char* DHT22_TEMP = "DHT22_TEMP";
+    constexpr const char* DHT22_HUM  = "DHT22_HUMIDITY";
+}
+
+namespace SensorManager {
 
     constexpr uint8_t MAX_SENSORS = 4;
 
-    /** 
-     * @brief reads sensors and provides the data als Json
-     * @param sensorDataJson buffer for data Json
-     * @param length of the buffer
-     * @return true, if data was written correctly
-     */
-    bool getSensorDataJson(char sensorDataJson[], size_t len);
+    struct SensorEntry {
+        SensorBase* sensor;
+        const char* type;
+    };
 
-    /**
-     * @brief initializes all sensors.
-     */
+    bool getSensorDataJson(char sensorDataJson[], size_t len);
     void initSensors();
 }

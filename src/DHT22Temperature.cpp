@@ -11,3 +11,8 @@ bool DHT22Temperature::isValid(){
 void DHT22Temperature::readRaw(float &buffer){
     buffer=_dht->readTemperature();
 }
+
+bool DHT22Temperature::getCalibrationJson(char *buffer, size_t len){
+    size_t written = snprintf(buffer, len, "[]");
+    return written < len;
+}

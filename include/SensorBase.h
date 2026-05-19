@@ -19,6 +19,13 @@ virtual ~SensorBase() = default;
         readRaw(value);
         return true;
         }
+    /**
+     * @brief getter for calibration info
+     * @param buffer buffer for info
+     * @param len length of the buffer
+     * @return buffer is valid
+     */
+    virtual bool getCalibrationJson(char *buffer, size_t len)=0;
 
     private:
     virtual bool isValid()=0;
