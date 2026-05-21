@@ -238,6 +238,22 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 - Kalibrierungsparameter in NVS: Skalierungsfaktor + Tara
 - Anzahl Messungen anpassen wenn Werte schwanken (erhöhen) oder TCP-Timeout der MainUnit überschritten wird (reduzieren)
 
+### WiFiManager
+`include/WiFiManager.h` / `src/WiFiManager.cpp` — Namespace, keine Klasse.
+
+- `initWifi()` — Verbindungsaufbau mit Cooldown (30s) und Timeout (10s) pro Versuch; ruft intern `HttpServer::begin()` bzw. `HttpServer::end()` auf
+- `isConnected()` — wraps `WiFi.status() == WL_CONNECTED`
+- In `loop()` aufrufen wenn `!isConnected()` — kein Aufruf in `setup()`
+- **Abhängigkeit**: `WiFiManager` startet und stoppt den `HttpServer` — `HttpServer::begin()` nie direkt aufrufen
+
+### HttpServer
+`include/HttpServer.h` / `src/HttpServer.cpp` — Namespace, keine Klasse.
+
+- `begin()` / `end()` — werden ausschließlich vom WiFiManager aufgerufen, nie direkt
+- `handle()` — in `loop()` aufrufen; nimmt eingehende Verbindung an, liest Header bis `\r\n\r\n`, routet zu Handler, sendet Response, schließt Verbindung
+- Request-Buffer: 512 Bytes (reicht für Digest Auth Header)
+- POST `/calibrate`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
+
 ### PlatformIO-Struktur
 ```ini
 [env:lolin_c3_mini]      ← einzige Build-Konfiguration, flach ohne extends

@@ -13,8 +13,5 @@ void loop() {
   if(!WiFiManager::isConnected()){
     WiFiManager::initWifi();
   }
-  char json[128];
-  SensorManager::getSensorDataJson(json,sizeof(json));
-  Serial.println(json);
   delay(1000);
 }

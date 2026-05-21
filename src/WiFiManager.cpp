@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include "wifi_config.h"
 #include <Arduino.h>
+#include "HttpServer.h"
 
 #define WIFI_CONNECTION_TRY_COOLDOWN 30000UL
 #define WIFI_CONNECTION_TIMEOUT 10000UL
@@ -11,8 +12,9 @@ namespace WiFiManager
 
     void initWifi()
     {
-        static unsigned lastTry = ULONG_MAX;
-        if(millis()-lastTry<WIFI_CONNECTION_TRY_COOLDOWN){
+        static unsigned long lastTry = ULONG_MAX;
+        if (millis() - lastTry < WIFI_CONNECTION_TRY_COOLDOWN)
+        {
             return;
         }
         WiFi.disconnect(true);
@@ -21,10 +23,20 @@ namespace WiFiManager
         WiFi.setAutoConnect(true);
         WiFi.begin(WIFI_SSID, WIFI_PW);
         unsigned long loopStart = millis();
-        while(!isConnected()&&millis() - loopStart<WIFI_CONNECTION_TIMEOUT){
+        while (!isConnected() && millis() - loopStart < WIFI_CONNECTION_TIMEOUT)
+        {
             vTaskDelay(pdMS_TO_TICKS(500));
         }
         lastTry = millis();
+        if (isConnected())
+        {
+            HttpServer::begin();
+            Serial.println(WiFi.localIP());
+        }
+        else
+        {
+            HttpServer::end();
+        }
     }
     bool isConnected()
     {

@@ -2,11 +2,15 @@
 
 namespace WiFiManager{
 /**
- * @brief initializes Wifi
- * @return true if connection established
+ * @brief initializes or reconnects Wifi
  */
-bool initWifi();
+void initWifi();
 
+/**
+ * @brief checks, if WiFi is connected
+ * @return true if wifi is connected
+ */
+bool isConnected();
 }
 
 
