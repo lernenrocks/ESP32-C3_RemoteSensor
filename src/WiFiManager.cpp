@@ -4,7 +4,8 @@
 #include <Arduino.h>
 #include "HttpServer.h"
 
-#define WIFI_CONNECTION_TRY_COOLDOWN 30000UL
+//#define WIFI_CONNECTION_TRY_COOLDOWN 30000UL //normal on MainUnit
+#define WIFI_CONNECTION_TRY_COOLDOWN 10000UL //debug: reduced cooldown
 #define WIFI_CONNECTION_TIMEOUT 10000UL
 
 namespace WiFiManager

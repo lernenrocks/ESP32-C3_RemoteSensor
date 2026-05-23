@@ -27,6 +27,12 @@ virtual ~SensorBase() = default;
      */
     virtual bool getCalibrationJson(char *buffer, size_t len)=0;
 
+    /**
+     * get specific precision of the sensor value
+     * @return precision after comma
+     */
+    virtual int getPrecision()=0;
+
     private:
     virtual bool isValid()=0;
     virtual void readRaw(float & buffer)=0;

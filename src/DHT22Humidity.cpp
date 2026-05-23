@@ -16,3 +16,6 @@ bool DHT22Humidity::getCalibrationJson(char *buffer, size_t len){
 void DHT22Humidity::readRaw(float &buffer){
     buffer=_dht->readHumidity();
 }
+int DHT22Humidity::getPrecision(){
+    return 1;
+}

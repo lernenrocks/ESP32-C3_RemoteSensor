@@ -20,4 +20,7 @@ HX711Sensor::HX711Sensor(int dout, int sck) {
         //! Increase averaging samples if values fluctuate; decrease if MainUnit TCP timeout is hit
         buffer = static_cast<float>(_scale.get_value(3));
     }
+    int HX711Sensor::getPrecision(){
+        return 0;
+    }
     

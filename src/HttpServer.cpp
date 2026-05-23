@@ -1,9 +1,31 @@
 #include <WiFi.h>
-#define REQUEST_MAX_SIZE 512
+#include "SensorManager.h"
+
+#define BUFFER_SIZE 512
 namespace
 {
     WiFiServer server(80);
-    char requestHeader[REQUEST_MAX_SIZE] = {};
+    char requestHeader[BUFFER_SIZE] = {};
+
+    const char getSensors[] = "GET /sensors";
+    const char getStatus[] = "GET /status";//not implemented yet
+    const char getCalibrationInfo[] = "GET /calibrationinfo";
+    const char postCalibrate[] = "POST /calibrate";//not implemented yet
+
+    void printSensorInfo(WiFiClient &client)
+    {
+        char buffer[BUFFER_SIZE] = {};
+        SensorManager::getSensorDataJson(buffer, sizeof(buffer));
+        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
+        client.print(buffer);
+    }
+    void printCalibrationInfo(WiFiClient &client)
+    {
+        char buffer[BUFFER_SIZE] = {};
+        SensorManager::getCalibrationInfoJson(buffer, sizeof(buffer));
+        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
+        client.print(buffer);
+    }
 }
 namespace HttpServer
 {
@@ -11,7 +33,6 @@ namespace HttpServer
     void begin()
     {
         server.begin();
-        Serial.println("server ready");
     }
     void end()
     {
@@ -20,10 +41,11 @@ namespace HttpServer
     void handle()
     {
         WiFiClient client = server.available();
-        if (!client) return;
-        memset(requestHeader, 0, REQUEST_MAX_SIZE);
+        if (!client)
+            return;
+        memset(requestHeader, 0, BUFFER_SIZE);
         int idx = 0;
-        while (client.connected() && idx < REQUEST_MAX_SIZE - 1)
+        while (client.connected() && idx < BUFFER_SIZE - 1)
         {
             if (client.available())
             {
@@ -36,8 +58,18 @@ namespace HttpServer
                 }
             }
         }
-        Serial.println(requestHeader);
-        client.println("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+        Serial.println(requestHeader); // debug: output
+        if (strstr(requestHeader, getSensors) != 0)
+        {
+            printSensorInfo(client);
+        }
+        else if(strstr(requestHeader,getCalibrationInfo)!=0){
+            printCalibrationInfo(client);
+        }
+        else
+        {
+            client.println("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+        }
         client.stop();
     }
 }

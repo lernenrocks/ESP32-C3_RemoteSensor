@@ -43,7 +43,9 @@ namespace SensorManager
             char valueString[16];
             if (valid)
             {
-                snprintf(valueString, sizeof(valueString), "%.0f", value);
+                char formatLiteral[8];
+                snprintf(formatLiteral,sizeof(formatLiteral),"%%.%df",sensorArray[i].sensor->getPrecision());
+                snprintf(valueString, sizeof(valueString), formatLiteral, value);
             }
             else
             {
@@ -71,6 +73,45 @@ namespace SensorManager
             snprintf(sensorDataJson, len, "{}");
         }
         return JsonValid;
+    }
+
+    bool getCalibrationInfoJson(char buf[], size_t len)
+    {
+        if (sensorCount == 0)
+        {
+            snprintf(buf, len, "[]");
+            return false;
+        }
+        bool valid = true;
+        size_t offset = 0;
+        buf[offset++] = '[';
+        for (size_t i = 0; i < sensorCount; i++)
+        {
+            char steps[256] = {};
+            sensorArray[i].sensor->getCalibrationJson(steps, sizeof(steps));
+            size_t written = snprintf(buf + offset, len - offset,
+                "{\"index\":%d,\"type\":\"%s\",\"steps\":%s},",
+                i, sensorArray[i].type, steps);
+            if (written >= len - offset)
+            {
+                valid = false;
+                break;
+            }
+            offset += written;
+        }
+        if (offset < len)
+        {
+            buf[offset - 1] = ']';
+        }
+        else
+        {
+            valid = false;
+        }
+        if (!valid)
+        {
+            snprintf(buf, len, "[]");
+        }
+        return valid;
     }
 
     void initSensors()
