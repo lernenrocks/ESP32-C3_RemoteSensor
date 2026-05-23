@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "SensorManager.h"
 #include "WiFiManager.h"
+#include "HttpServer.h"
 
 char name[64]={"TerraControl SensorBox"};
 
@@ -13,5 +14,7 @@ void loop() {
   if(!WiFiManager::isConnected()){
     WiFiManager::initWifi();
   }
-  delay(1000);
+  else {
+    HttpServer::handle();
+  }
 }
