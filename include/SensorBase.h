@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <ArduinoJson.h>
 /**
  * @brief Abstract base class for all sensors
  */
@@ -28,10 +29,23 @@ virtual ~SensorBase() = default;
     virtual bool getCalibrationJson(char *buffer, size_t len)=0;
 
     /**
-     * get specific precision of the sensor value
+     * @brief get specific precision of the sensor value
      * @return precision after comma
      */
     virtual int getPrecision()=0;
+
+    /**
+     * @brief calibrate the sensor with given data
+     * @param data provided data for calibration
+     * @return true, if calibration is succeeded. Also true if a sensor doesn't need calibration
+     */
+    virtual bool calibrate(const JsonObjectConst data)=0;
+
+    /**
+     * @brief reset calibration to default state (scale=1, offset=0)
+     * @return true on success. Sensors without calibration always return true
+     */
+    virtual bool reset()=0;
 
     private:
     virtual bool isValid()=0;

@@ -124,8 +124,46 @@ Kalibrierte Werte aller angeschlossenen Sensoren. Jeder Wert trägt seinen eigen
 - `value` ist `float` — kalibrierter Wert (kg, °C, %, etc.)
 - Lesen erfolgt ausschließlich on-demand beim Request, kein Background-Sampling
 
-### POST /calibrate
-Schreibt Kalibrierungsparameter in NVS und startet den Knoten neu. Gedacht für die Companion App — keine Live-Kalibrierung im laufenden Betrieb.
+### POST /calibrate/:idx
+Setzt Kalibrierungsparameter am Sensor mit Index `:idx`. Kein Neustart — Werte sind sofort aktiv.
+
+**HX711-Kalibrierungsablauf (zwei Schritte, ein POST):**
+
+1. C3 booten (Initialzustand: scale=1, offset=0)
+2. Waage leer lassen → `GET /sensors` — der angezeigte Wert ist der Raw-ADC-Rohwert (weil scale=1, offset=0, also `get_units = raw / 1 = raw`)
+3. Referenzgewicht auflegen
+4. `POST /calibrate/0` mit `{"offset": <wert_aus_schritt2>, "ref_weight": <gramm>}`
+
+Der C3 führt dann aus:
+- `set_offset(<offset>)`
+- liest aktuellen Raw-ADC-Wert mit Gewicht (`get_value`)
+- berechnet `scale = (raw_mit_gewicht - offset) / ref_weight`
+- ab sofort gibt `GET /sensors` kalibrierte Gramm zurück
+
+**Achtung**: Kalibrierungswerte leben aktuell nur im RAM — nach Neustart ist neu zu kalibrieren (NVS folgt später).
+
+**HX711-Kalibrierungsablauf (drei Schritte):**
+```
+POST /reset/0         → Sensor auf scale=1, offset=0 zurücksetzen
+GET /sensors          → {"sensor:0": {"value": 87244, ...}}   ← Rohwert leer
+# Gewicht drauf
+POST /calibrate/0     → {"offset": 87244, "ref_weight": 2120}
+GET /sensors          → {"sensor:0": {"value": 2120, ...}}    ← kalibriert ✓
+```
+
+Der Reset-Schritt stellt sicher, dass `GET /sensors` den Raw-ADC-Rohwert liefert — unabhängig davon ob der Sensor vorher schon kalibriert war. Nach Booten aus dem Initialzustand (scale=1, offset=0) kann der Reset-Schritt entfallen, aber der Client muss das nicht wissen.
+
+### POST /reset/:idx
+Setzt die Kalibrierung eines einzelnen Sensors zurück auf scale=1, offset=0. Kein Neustart — wirkt sofort im RAM (später auch NVS).
+
+Ermöglicht Neukalibrierung eines einzelnen Sensors ohne die anderen zu beeinflussen.
+
+Response: `200 OK` mit `{}`
+
+### POST /factoryreset
+Löscht alle NVS-Daten (Credentials + Kalibrierung aller Sensoren) und rebootet den C3 in den Provisioning-AP-Modus. Entspricht dem langen Drücken von GPIO9, ist aber auch erreichbar wenn GPIO9 physisch verbaut ist.
+
+**Achtung**: Die Response kommt nicht mehr an — der C3 rebootet sofort. Der Client bekommt einen Connection Reset; das ist erwartetes Verhalten.
 
 ### GET /calibrationinfo
 Beschreibt Sensortyp und Kalibrierungsschritte pro Sensor. Wird einmalig beim Onboarding abgefragt — die Companion App baut den Kalibrierungsworkflow dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
@@ -138,7 +176,7 @@ Array-Index = Sensor-ID. Jeder Schritt hat `instruction` (Anweisung an den User)
     "type": "HX711",
     "steps": [
       { "instruction": "Place empty scale", "key": "offset" },
-      { "instruction": "Add known weight",  "key": "raw_at_weight", "ref": "ref_weight" }
+      { "instruction": "Add known weight",  "key": "ref_weight", "ref": "ref_weight" }
     ]
   },
   {
@@ -148,7 +186,7 @@ Array-Index = Sensor-ID. Jeder Schritt hat `instruction` (Anweisung an den User)
 ]
 ```
 
-`scale` berechnet der C3 beim `POST /calibrate` selbst aus `raw_at_weight` und `ref_weight`.
+`raw_at_weight` liest der C3 beim `POST /calibrate` selbst — der Client übermittelt nur `offset` und `ref_weight`. `scale` berechnet der C3 aus `(raw_at_weight - offset) / ref_weight`.
 
 ### GET /status
 Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboarding. Enthält auch die interne Chiptemperatur des ESP32-C3.

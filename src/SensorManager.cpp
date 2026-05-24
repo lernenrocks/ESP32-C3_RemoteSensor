@@ -130,4 +130,12 @@ namespace SensorManager
             Serial.println("[ERROR] DHT22 humidity sensor not initialized");
         }
     }
+
+    bool calibrateSensor(uint8_t idx, JsonObjectConst data){
+        return sensorArray[idx].sensor->calibrate(data);
+    }
+
+    bool resetSensor(uint8_t idx){
+        return sensorArray[idx].sensor->reset();
+    }
 }

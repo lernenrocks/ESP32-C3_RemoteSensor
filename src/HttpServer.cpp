@@ -1,21 +1,37 @@
 #include <WiFi.h>
 #include "SensorManager.h"
+#include <ArduinoJson.h>
 
 #define BUFFER_SIZE 512
+#define BODY_SIZE 256
 namespace
 {
     WiFiServer server(80);
     char requestHeader[BUFFER_SIZE] = {};
 
     const char getSensors[] = "GET /sensors";
-    const char getStatus[] = "GET /status";//not implemented yet
+    const char getStatus[] = "GET /status";
     const char getCalibrationInfo[] = "GET /calibrationinfo";
-    const char postCalibrate[] = "POST /calibrate";//not implemented yet
 
     void printSensorInfo(WiFiClient &client)
     {
         char buffer[BUFFER_SIZE] = {};
         SensorManager::getSensorDataJson(buffer, sizeof(buffer));
+        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
+        client.print(buffer);
+    }
+    void printStatus(WiFiClient &client)
+    {
+        char mac[18] = {};
+        WiFi.macAddress().toCharArray(mac, sizeof(mac));
+        char buffer[BUFFER_SIZE] = {};
+        snprintf(buffer, sizeof(buffer),
+            "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u}",
+            mac,
+            millis() / 1000,
+            WiFi.RSSI(),
+            temperatureRead(),
+            esp_get_free_heap_size());
         client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
         client.print(buffer);
     }
@@ -59,16 +75,38 @@ namespace HttpServer
             }
         }
         Serial.println(requestHeader); // debug: output
+        uint8_t sensorIdx;
         if (strstr(requestHeader, getSensors) != 0)
         {
             printSensorInfo(client);
         }
-        else if(strstr(requestHeader,getCalibrationInfo)!=0){
+        else if (strstr(requestHeader, getStatus) != 0)
+        {
+            printStatus(client);
+        }
+        else if (strstr(requestHeader, getCalibrationInfo) != 0)
+        {
             printCalibrationInfo(client);
+        }
+        else if (sscanf(requestHeader, "POST /calibrate/%hhu", &sensorIdx) == 1)
+        {
+            StaticJsonDocument<BODY_SIZE> doc;
+            DeserializationError err = deserializeJson(doc, client);
+            if (err || !SensorManager::calibrateSensor(sensorIdx, doc.as<JsonObjectConst>()))
+                client.println("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            else
+                client.println("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+        }
+        else if (sscanf(requestHeader, "POST /reset/%hhu", &sensorIdx) == 1)
+        {
+            if (SensorManager::resetSensor(sensorIdx))
+                client.println("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+            else
+                client.println("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
         else
         {
-            client.println("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+            client.println("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
         client.stop();
     }

@@ -20,4 +20,6 @@ namespace SensorManager {
     bool getSensorDataJson(char sensorDataJson[], size_t len);
     bool getCalibrationInfoJson(char buf[], size_t len);
     void initSensors();
+    bool calibrateSensor(uint8_t idx, JsonObjectConst data);
+    bool resetSensor(uint8_t idx);
 }
