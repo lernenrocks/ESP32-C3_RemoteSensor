@@ -16,12 +16,4 @@ private:
     HX711 _scale;
     bool isValid() override;
     void readRaw(float &buffer) override;
-    /**
-     * @brief first calibration method. Trigger on empty scale only. Must been called before setScale
-     */
-    void setOffset(long offset);
-    /**
-     * @brief second calibration method. Must been called after setOffset
-     */
-    void setScale(float referenceWeightInGramm);
 };

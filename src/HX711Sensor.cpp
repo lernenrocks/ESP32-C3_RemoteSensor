@@ -36,19 +36,10 @@ bool HX711Sensor::calibrate(const JsonObjectConst data){
     if(refWeight<=0){
         return false;
     }
-    HX711Sensor::setOffset(offset);
-    HX711Sensor::setScale(refWeight);
-    return true;
-}
-
-void HX711Sensor::setOffset(long offset){
     _scale.set_offset(offset);
-
-}
-void HX711Sensor::setScale(float referenceWeightInGramm)
-{
     float value=_scale.get_value(5);
-    _scale.set_scale(value/referenceWeightInGramm);
+     _scale.set_scale(value/refWeight);
+    return true;
 }
 
 bool HX711Sensor::reset()

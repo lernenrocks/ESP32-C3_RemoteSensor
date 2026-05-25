@@ -2,6 +2,8 @@
 #include "SensorManager.h"
 #include <ArduinoJson.h>
 
+extern const char FIRMWARE_VERSION[];
+
 #define BUFFER_SIZE 512
 #define BODY_SIZE 256
 namespace
@@ -26,12 +28,13 @@ namespace
         WiFi.macAddress().toCharArray(mac, sizeof(mac));
         char buffer[BUFFER_SIZE] = {};
         snprintf(buffer, sizeof(buffer),
-            "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u}",
+            "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u,\"version\":\"%s\"}",
             mac,
-            millis() / 1000,
+            millis(),
             WiFi.RSSI(),
             temperatureRead(),
-            esp_get_free_heap_size());
+            esp_get_free_heap_size(),
+            FIRMWARE_VERSION);
         client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
         client.print(buffer);
     }
@@ -74,7 +77,6 @@ namespace HttpServer
                 }
             }
         }
-        Serial.println(requestHeader); // debug: output
         uint8_t sensorIdx;
         if (strstr(requestHeader, getSensors) != 0)
         {
@@ -93,20 +95,20 @@ namespace HttpServer
             StaticJsonDocument<BODY_SIZE> doc;
             DeserializationError err = deserializeJson(doc, client);
             if (err || !SensorManager::calibrateSensor(sensorIdx, doc.as<JsonObjectConst>()))
-                client.println("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
             else
-                client.println("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
         }
         else if (sscanf(requestHeader, "POST /reset/%hhu", &sensorIdx) == 1)
         {
             if (SensorManager::resetSensor(sensorIdx))
-                client.println("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
             else
-                client.println("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
         else
         {
-            client.println("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            client.print("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
         client.stop();
     }

@@ -3,7 +3,8 @@
 #include "WiFiManager.h"
 #include "HttpServer.h"
 
-char name[64]={"TerraControl SensorBox"};
+
+extern const char FIRMWARE_VERSION[] = "0.1.0";
 
 void setup() {
   Serial.begin(115200);

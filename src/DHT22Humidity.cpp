@@ -1,8 +1,6 @@
-#include "DTH22Humidity.h"
+#include "DHT22Humidity.h"
 
-DHT22Humidity::DHT22Humidity(DHT *dht){
-    _dht=dht;
-}
+DHT22Humidity::DHT22Humidity(DHT *dht) : _dht(dht){}
 
 bool DHT22Humidity::isValid(){
     return !isnan(_dht->readHumidity());

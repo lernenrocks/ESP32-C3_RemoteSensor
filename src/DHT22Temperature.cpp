@@ -1,8 +1,6 @@
 #include "DHT22Temperature.h"
 
-DHT22Temperature::DHT22Temperature(DHT *dht){
-    _dht=dht;
-}
+DHT22Temperature::DHT22Temperature(DHT *dht) : _dht(dht){}
 
 bool DHT22Temperature::isValid(){
     return !isnan(_dht->readTemperature());

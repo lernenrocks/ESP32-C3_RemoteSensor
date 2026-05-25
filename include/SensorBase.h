@@ -7,8 +7,7 @@
 class SensorBase
 {
 public:
-SensorBase(){
-}
+SensorBase() = default;
 virtual ~SensorBase() = default;
     /**
      * @brief reads the value of a sensor

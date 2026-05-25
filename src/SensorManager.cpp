@@ -3,7 +3,7 @@
 #include "HX711Sensor.h"
 #include <DHT.h>
 #include "DHT22Temperature.h"
-#include "DTH22Humidity.h"
+#include "DHT22Humidity.h"
 
 DHT dht(DHT22_DATA, DHT22);
 
@@ -44,7 +44,7 @@ namespace SensorManager
             if (valid)
             {
                 char formatLiteral[8];
-                snprintf(formatLiteral,sizeof(formatLiteral),"%%.%df",sensorArray[i].sensor->getPrecision());
+                snprintf(formatLiteral, sizeof(formatLiteral), "%%.%df", sensorArray[i].sensor->getPrecision());
                 snprintf(valueString, sizeof(valueString), formatLiteral, value);
             }
             else
@@ -90,8 +90,8 @@ namespace SensorManager
             char steps[256] = {};
             sensorArray[i].sensor->getCalibrationJson(steps, sizeof(steps));
             size_t written = snprintf(buf + offset, len - offset,
-                "{\"index\":%d,\"type\":\"%s\",\"steps\":%s},",
-                i, sensorArray[i].type, steps);
+                                      "{\"index\":%d,\"type\":\"%s\",\"steps\":%s},",
+                                      i, sensorArray[i].type, steps);
             if (written >= len - offset)
             {
                 valid = false;
@@ -131,11 +131,24 @@ namespace SensorManager
         }
     }
 
-    bool calibrateSensor(uint8_t idx, JsonObjectConst data){
-        return sensorArray[idx].sensor->calibrate(data);
+    bool calibrateSensor(uint8_t idx, JsonObjectConst data)
+    {
+        if (idx >= sensorCount)
+        {
+            return false;
+        }
+        else
+        {
+            return sensorArray[idx].sensor->calibrate(data);
+        }
     }
 
-    bool resetSensor(uint8_t idx){
+    bool resetSensor(uint8_t idx)
+    {
+        if (idx >= sensorCount)
+        {
+            return false;
+        }
         return sensorArray[idx].sensor->reset();
     }
 }
