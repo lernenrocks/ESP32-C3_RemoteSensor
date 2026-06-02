@@ -5,12 +5,12 @@
 class HX711Sensor : public SensorBase
 {
 public:
-    HX711Sensor(int dout, int sck);
+    HX711Sensor(int dout, int sck, uint8_t pId);
     ~HX711Sensor() = default;
     bool getCalibrationJson(char *buffer, size_t len) override;
     int getPrecision() override;
     bool calibrate(const JsonObjectConst data) override;
-    bool reset() override;
+    void reset() override;
 
 private:
     HX711 _scale;

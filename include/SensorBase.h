@@ -44,7 +44,7 @@ virtual ~SensorBase() = default;
      * @brief reset calibration to default state (scale=1, offset=0)
      * @return true on success. Sensors without calibration always return true
      */
-    virtual bool reset()=0;
+    virtual void reset()=0;
 
     private:
     virtual bool isValid()=0;

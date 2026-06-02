@@ -116,7 +116,7 @@ namespace SensorManager
 
     void initSensors()
     {
-        if (!addSensor(new HX711Sensor(HX711_DOUT, HX711_SCK), SensorType::HX711))
+        if (!addSensor(new HX711Sensor(HX711_DOUT, HX711_SCK, sensorCount), SensorType::HX711))
         {
             Serial.println("[ERROR] HX711 sensor not initialized");
         }
@@ -149,6 +149,7 @@ namespace SensorManager
         {
             return false;
         }
-        return sensorArray[idx].sensor->reset();
+        sensorArray[idx].sensor->reset();
+        return true;
     }
 }

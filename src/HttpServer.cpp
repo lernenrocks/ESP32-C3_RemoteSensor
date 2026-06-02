@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include "SensorManager.h"
 #include <ArduinoJson.h>
+#include "InternalStorage.h"
 
 extern const char FIRMWARE_VERSION[];
 
@@ -28,13 +29,13 @@ namespace
         WiFi.macAddress().toCharArray(mac, sizeof(mac));
         char buffer[BUFFER_SIZE] = {};
         snprintf(buffer, sizeof(buffer),
-            "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u,\"version\":\"%s\"}",
-            mac,
-            millis(),
-            WiFi.RSSI(),
-            temperatureRead(),
-            esp_get_free_heap_size(),
-            FIRMWARE_VERSION);
+                 "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u,\"version\":\"%s\"}",
+                 mac,
+                 millis(),
+                 WiFi.RSSI(),
+                 temperatureRead(),
+                 esp_get_free_heap_size(),
+                 FIRMWARE_VERSION);
         client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
         client.print(buffer);
     }
@@ -105,6 +106,15 @@ namespace HttpServer
                 client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
             else
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        }
+        else if (strstr(requestHeader, "POST /factoryreset"))
+        {
+            InternalStorage::erase();
+            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+            client.stop();
+            delay(100);
+            Serial.println("restart now");
+            ESP.restart();
         }
         else
         {

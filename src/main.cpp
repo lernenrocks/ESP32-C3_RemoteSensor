@@ -8,6 +8,7 @@ extern const char FIRMWARE_VERSION[] = "0.1.0";
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
   SensorManager::initSensors();
 }
 

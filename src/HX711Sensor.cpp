@@ -1,9 +1,24 @@
 #include "HX711Sensor.h"
+#include "InternalStorage.h"
 
-HX711Sensor::HX711Sensor(int dout, int sck)
+char prefNameSpace[12] = {};
+char prefOffset[] = "offset";
+char prefScale[] = "scale";
+
+HX711Sensor::HX711Sensor(int dout, int sck, uint8_t pId)
 {
     _scale.begin(dout, sck);
     _scale.set_scale();
+    snprintf(prefNameSpace, sizeof(prefNameSpace), "sensor_%d", pId);
+    InternalStorage::begin(prefNameSpace, true);
+    long offset;
+    float scale;
+    if (InternalStorage::readLong(prefOffset, offset) && InternalStorage::readFloat(prefScale, scale))
+    {
+        _scale.set_offset(offset);
+        _scale.set_scale(scale);
+    }
+    InternalStorage::end();
 }
 bool HX711Sensor::isValid()
 {
@@ -27,24 +42,34 @@ int HX711Sensor::getPrecision()
 {
     return 0;
 }
-bool HX711Sensor::calibrate(const JsonObjectConst data){
-    if(data["offset"].isNull() || data["ref_weight"].isNull()){
+bool HX711Sensor::calibrate(const JsonObjectConst data)
+{
+    if (data["offset"].isNull() || data["ref_weight"].isNull())
+    {
         return false;
     }
     long offset = data["offset"];
     float refWeight = data["ref_weight"];
-    if(refWeight<=0){
+    if (refWeight <= 0)
+    {
         return false;
     }
+    InternalStorage::begin(prefNameSpace, false);
+    InternalStorage::writeLong(prefOffset, offset);
     _scale.set_offset(offset);
-    float value=_scale.get_value(5);
-     _scale.set_scale(value/refWeight);
+    float newScale = _scale.get_value(5)/refWeight;
+    InternalStorage::writeFloat(prefScale, newScale);
+    InternalStorage::end();
+    _scale.set_scale(newScale);
     return true;
 }
 
-bool HX711Sensor::reset()
+void HX711Sensor::reset()
 {
+    InternalStorage::begin(prefNameSpace, false);
+    InternalStorage::writeLong(prefOffset, 0);
+    InternalStorage::writeFloat(prefScale, 1.0f);
+    InternalStorage::end();
     _scale.set_scale(1.0f);
     _scale.set_offset(0);
-    return true;
 }
