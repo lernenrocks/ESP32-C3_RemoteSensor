@@ -12,16 +12,13 @@ namespace
     WiFiServer server(80);
     char requestHeader[BUFFER_SIZE] = {};
 
-    const char getSensors[] = "GET /sensors";
-    const char getStatus[] = "GET /status";
-    const char getCalibrationInfo[] = "GET /calibrationinfo";
-
     void printSensorInfo(WiFiClient &client)
     {
         char buffer[BUFFER_SIZE] = {};
         SensorManager::getSensorDataJson(buffer, sizeof(buffer));
-        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
+        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer) + 1);
         client.print(buffer);
+        client.print("\n");
     }
     void printStatus(WiFiClient &client)
     {
@@ -36,15 +33,17 @@ namespace
                  temperatureRead(),
                  esp_get_free_heap_size(),
                  FIRMWARE_VERSION);
-        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
+        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer) + 1);
         client.print(buffer);
+        client.print("\n");
     }
     void printCalibrationInfo(WiFiClient &client)
     {
         char buffer[BUFFER_SIZE] = {};
         SensorManager::getCalibrationInfoJson(buffer, sizeof(buffer));
-        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer));
+        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer) + 1);
         client.print(buffer);
+        client.print("\n");
     }
 }
 namespace HttpServer
@@ -81,7 +80,9 @@ namespace HttpServer
         uint8_t sensorIdx;
         if (strstr(requestHeader, "GET / "))
         {
-            // build interface
+            const char body[] = "<html><body><h1>SensorNode Provisioning</h1><p>HTML interface coming soon.</p></body></html>";
+            client.printf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(body));
+            client.print(body);
         }
         else if (strstr(requestHeader, "GET /sensors") != 0)
         {
@@ -103,13 +104,13 @@ namespace HttpServer
             {
                 if (doc["ssid"].isNull() || doc["password"].isNull())
                 {
-                    return;
+                    client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
                 }
-                InternalStorage::begin("Credentials", false);
+                InternalStorage::begin("Wifi", false);
                 InternalStorage::writeString("ssid", doc["ssid"]);
                 InternalStorage::writeString("password", doc["password"]);
                 InternalStorage::end();
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             }
             else
             {
@@ -123,19 +124,41 @@ namespace HttpServer
             if (err || !SensorManager::calibrateSensor(sensorIdx, doc.as<JsonObjectConst>()))
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
             else
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
         }
         else if (sscanf(requestHeader, "POST /reset/%hhu", &sensorIdx) == 1)
         {
             if (SensorManager::resetSensor(sensorIdx))
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             else
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
         else if (strstr(requestHeader, "POST /factoryreset") != 0)
         {
             InternalStorage::erase();
-            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+            client.stop();
+            delay(100);
+            Serial.println("restart now");
+            ESP.restart();
+        }
+        else if (strstr(requestHeader, "POST /provision/finish"))
+        {
+            InternalStorage::begin("Wifi", false);
+            InternalStorage::writeBool("provisioned", true);
+            InternalStorage::end();
+            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+            client.stop();
+            delay(100);
+            Serial.println("restart now");
+            ESP.restart();
+        }
+        else if (strstr(requestHeader, "POST /reset"))
+        {
+            InternalStorage::begin("Wifi", false);
+            InternalStorage::writeBool("provisioned", false);
+            InternalStorage::end();
+            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             client.stop();
             delay(100);
             Serial.println("restart now");

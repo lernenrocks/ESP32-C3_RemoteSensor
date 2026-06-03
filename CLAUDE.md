@@ -154,16 +154,38 @@ GET /sensors          → {"sensor:0": {"value": 2120, ...}}    ← kalibriert �
 Der Reset-Schritt stellt sicher, dass `GET /sensors` den Raw-ADC-Rohwert liefert — unabhängig davon ob der Sensor vorher schon kalibriert war. Nach Booten aus dem Initialzustand (scale=1, offset=0) kann der Reset-Schritt entfallen, aber der Client muss das nicht wissen.
 
 ### POST /reset/:idx
-Setzt die Kalibrierung eines einzelnen Sensors zurück auf scale=1, offset=0. Kein Neustart — wirkt sofort im RAM (später auch NVS).
+Setzt die Kalibrierung eines einzelnen Sensors zurück auf scale=1, offset=0 — sofort im RAM und in NVS. Kein Neustart.
 
 Ermöglicht Neukalibrierung eines einzelnen Sensors ohne die anderen zu beeinflussen.
 
 Response: `200 OK` mit `{}`
 
 ### POST /factoryreset
-Löscht alle NVS-Daten (Credentials + Kalibrierung aller Sensoren) und rebootet den C3 in den Provisioning-AP-Modus. Entspricht dem langen Drücken von GPIO9, ist aber auch erreichbar wenn GPIO9 physisch verbaut ist.
+Löscht alle NVS-Daten (Credentials + Kalibrierung aller Sensoren) und rebootet. Entspricht dem Drücken von GPIO9 beim Boot.
 
 **Achtung**: Die Response kommt nicht mehr an — der C3 rebootet sofort. Der Client bekommt einen Connection Reset; das ist erwartetes Verhalten.
+
+### GET /
+Liefert die Provisioning-HTML-Seite. Nur sinnvoll im AP-Modus (kein WiFi konfiguriert oder `provisioned = false`). Im Normalbetrieb erreichbar aber nicht vorgesehen.
+
+### POST /provision/wifi
+Speichert SSID und Passwort in NVS. Kein Neustart — Kalibrierung kann danach noch durchgeführt werden.
+
+```json
+{ "ssid": "MyNetwork", "password": "secret" }
+```
+
+Response: `200 OK` mit `{}` — `400 Bad Request` wenn `ssid` oder `password` fehlen.
+
+### POST /provision/finish
+Setzt `provisioned = true` in NVS und rebootet. Abschluss des Onboarding-Flows nach WiFi + Kalibrierung.
+
+**Achtung**: Response kommt nicht mehr an — C3 rebootet sofort.
+
+### POST /reset/credentials
+Setzt `provisioned = false` in NVS und rebootet. C3 startet im AP-Modus für Neukonfiguration — Kalibrierungsdaten bleiben erhalten.
+
+Anwendungsfall: C3 von einer MainUnit auf eine andere übertragen.
 
 ### GET /calibrationinfo
 Beschreibt Sensortyp und Kalibrierungsschritte pro Sensor. Wird einmalig beim Onboarding abgefragt — die Companion App baut den Kalibrierungsworkflow dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
@@ -214,19 +236,37 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 
 ---
 
+## NVS-Struktur (Preferences)
+
+| Namespace | Key | Typ | Beschreibung |
+|-----------|-----|-----|--------------|
+| `Wifi` | `ssid` | string | WLAN-SSID |
+| `Wifi` | `password` | string | WLAN-Passwort |
+| `Wifi` | `provisioned` | bool | `true` nach erfolgreichem Onboarding |
+| `sensor_N` | `offset` | long | Tara-Offset (leere Wägeplatte) |
+| `sensor_N` | `scale` | float | Skalierungsfaktor |
+
+`N` = Array-Index des Sensors (0, 1, 2, …). `erase()` löscht alle Namespaces.
+
+---
+
 ## Provisioning / Factory Reset
 
-GPIO9 (BOOT-Taste) lang drücken → Factory Reset (löscht Credentials UND Kalibrierung):
+**Boot-Logik im WiFiManager:**
+- `Wifi`-Namespace nicht vorhanden oder `provisioned = false` → AP-Modus, `GET /` liefert HTML-Seite
+- `provisioned = true` → STA-Modus, normaler WiFi-Connect, Webserver für REST-API
 
-1. C3 öffnet eigenen AP (`TerraControl-C3-AABBCC`)
-2. Webserver startet (nur in diesem Modus — kein permanenter Heap)
-3. User verbindet sich mit C3-AP, öffnet Browser
-4. HTML-Formular: MainUnit-AP-Credentials eingeben
-5. Sensor-spezifische Kalibrierungsschritte (je nach Sensortyp unterschiedlich)
-6. C3 speichert Credentials + Kalibrierung in NVS, bootet neu
-7. C3 verbindet sich mit MainUnit-AP → Normalbetrieb
+**Onboarding-Flow:**
+1. C3 öffnet AP (`TerraControl-C3-AABBCC`) — kein WiFi konfiguriert
+2. User verbindet sich mit AP, öffnet Browser → `GET /`
+3. WiFi-Tab: SSID + Passwort eingeben → `POST /provision/wifi`
+4. Sensor-Tabs: Kalibrierungsschritte pro Sensor → `POST /calibrate/:idx`
+5. Zusammenfassung → `POST /provision/finish` → C3 setzt `provisioned = true`, rebootet
+6. C3 verbindet sich mit WiFi → Normalbetrieb
 
-Webserver und AP laufen **ausschließlich** im Provisioning-Modus.
+**GPIO9 beim Boot gedrückt halten** → Factory Reset (löscht alle NVS-Daten, rebootet in AP-Modus)
+
+**`POST /reset/credentials`** → nur `provisioned = false`, Kalibrierung bleibt erhalten — für Netzwechsel ohne Neukalibrierung
 
 ---
 

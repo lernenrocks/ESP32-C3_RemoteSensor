@@ -21,7 +21,5 @@ void loop() {
   if(!WiFiManager::isConnected()){
     WiFiManager::initWifi();
   }
-  else {
     HttpServer::handle();
-  }
 }
