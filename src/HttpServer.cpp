@@ -5,8 +5,8 @@
 
 extern const char FIRMWARE_VERSION[];
 
-#define BUFFER_SIZE 512
-#define BODY_SIZE 256
+constexpr uint BUFFER_SIZE = 512;
+constexpr uint BODY_SIZE = 256;
 namespace
 {
     WiFiServer server(80);
@@ -79,17 +79,42 @@ namespace HttpServer
             }
         }
         uint8_t sensorIdx;
-        if (strstr(requestHeader, getSensors) != 0)
+        if (strstr(requestHeader, "GET / "))
+        {
+            // build interface
+        }
+        else if (strstr(requestHeader, "GET /sensors") != 0)
         {
             printSensorInfo(client);
         }
-        else if (strstr(requestHeader, getStatus) != 0)
+        else if (strstr(requestHeader, "GET /status") != 0)
         {
             printStatus(client);
         }
-        else if (strstr(requestHeader, getCalibrationInfo) != 0)
+        else if (strstr(requestHeader, "GET /calibrationinfo") != 0)
         {
             printCalibrationInfo(client);
+        }
+        else if (strstr(requestHeader, "POST /provision/wifi") != 0)
+        {
+            StaticJsonDocument<BODY_SIZE> doc;
+            DeserializationError err = deserializeJson(doc, client);
+            if (!err)
+            {
+                if (doc["ssid"].isNull() || doc["password"].isNull())
+                {
+                    return;
+                }
+                InternalStorage::begin("Credentials", false);
+                InternalStorage::writeString("ssid", doc["ssid"]);
+                InternalStorage::writeString("password", doc["password"]);
+                InternalStorage::end();
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
+            }
+            else
+            {
+                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            }
         }
         else if (sscanf(requestHeader, "POST /calibrate/%hhu", &sensorIdx) == 1)
         {
@@ -107,7 +132,7 @@ namespace HttpServer
             else
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
-        else if (strstr(requestHeader, "POST /factoryreset"))
+        else if (strstr(requestHeader, "POST /factoryreset") != 0)
         {
             InternalStorage::erase();
             client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}");
