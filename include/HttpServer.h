@@ -12,6 +12,7 @@ namespace HttpServer{
     void end();
     /**
      * @brief handles incomming requests
+     * @return true if a client was serviced, false if no connection was pending
      */
-    void handle();
+    bool handle();
 }

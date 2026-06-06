@@ -4,9 +4,14 @@
 #include "InternalStorage.h"
 
 extern const char FIRMWARE_VERSION[];
+extern uint32_t wakeCount;
 
 constexpr uint BUFFER_SIZE = 512;
 constexpr uint BODY_SIZE = 256;
+// Inaktivitaets-Timeout beim Header-Lesen: bricht ab, wenn nach dem Verbinden
+// keine (weiteren) Daten kommen. Schuetzt vor halb-offenen/abgerissenen
+// Verbindungen, bei denen client.connected() haengen bleibt (kein RST).
+constexpr unsigned long REQUEST_READ_TIMEOUT_MS = 1500UL;
 namespace
 {
     WiFiServer server(80);
@@ -26,12 +31,14 @@ namespace
         WiFi.macAddress().toCharArray(mac, sizeof(mac));
         char buffer[BUFFER_SIZE] = {};
         snprintf(buffer, sizeof(buffer),
-                 "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u,\"version\":\"%s\"}",
+                 "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u,\"min_free_heap\":%u,\"wake_count\":%u,\"version\":\"%s\"}",
                  mac,
                  millis(),
                  WiFi.RSSI(),
                  temperatureRead(),
                  esp_get_free_heap_size(),
+                 esp_get_minimum_free_heap_size(),
+                 wakeCount,
                  FIRMWARE_VERSION);
         client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(buffer) + 1);
         client.print(buffer);
@@ -57,24 +64,32 @@ namespace HttpServer
     {
         server.end();
     }
-    void handle()
+    bool handle()
     {
         WiFiClient client = server.available();
         if (!client)
-            return;
+            return false;
         memset(requestHeader, 0, BUFFER_SIZE);
         int idx = 0;
+        unsigned long lastData = millis();
         while (client.connected() && idx < BUFFER_SIZE - 1)
         {
             if (client.available())
             {
                 requestHeader[idx++] = client.read();
+                lastData = millis();
                 if (idx >= 4 &&
                     requestHeader[idx - 4] == '\r' && requestHeader[idx - 3] == '\n' &&
                     requestHeader[idx - 2] == '\r' && requestHeader[idx - 1] == '\n')
                 {
                     break;
                 }
+            }
+            else if (millis() - lastData > REQUEST_READ_TIMEOUT_MS)
+            {
+                // Keine Daten mehr -> abgerissene/stockende Verbindung aufgeben.
+                client.stop();
+                return false;
             }
         }
         uint8_t sensorIdx;
@@ -169,5 +184,6 @@ namespace HttpServer
             client.print("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
         client.stop();
+        return true;
     }
 }

@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include "HttpServer.h"
 #include "InternalStorage.h"
+#include "esp_wifi.h"
 
 #define WIFI_CONNECTION_TRY_COOLDOWN 10000UL
 #define WIFI_CONNECTION_TIMEOUT 5000UL
@@ -15,8 +16,20 @@ namespace WiFiManager
 
     void initWifi()
     {
+        // Diagnose: einmalig den Disconnect-Grund mitloggen. Zeigt in Klartext,
+        // ob Abrisse vom Link kommen (200 = BEACON_TIMEOUT) oder von Auth/Router.
+        static bool eventsRegistered = false;
+        if (!eventsRegistered)
+        {
+            WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
+                Serial.printf("[WARN] WiFi lost @%lu ms, reason: %u\n",
+                              millis(), info.wifi_sta_disconnected.reason);
+            }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+            eventsRegistered = true;
+        }
+
         static unsigned long lastTry = ULONG_MAX;
-        if (millis() - lastTry < WIFI_CONNECTION_TRY_COOLDOWN || WiFi.getMode()==WIFI_MODE_AP)
+        if (millis() - lastTry < WIFI_CONNECTION_TRY_COOLDOWN || WiFi.getMode() == WIFI_MODE_AP)
         {
             return;
         }
@@ -57,6 +70,10 @@ namespace WiFiManager
             {
                 HttpServer::begin();
                 Serial.println(WiFi.localIP());
+                // Modem-Sleep: Voraussetzung fuer esp_sleep_enable_wifi_wakeup.
+                // Der AP puffert, die Station wacht am DTIM-Beacon -> eingehende
+                // TCP-Anfrage weckt den schlafenden C3.
+                esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
             }
             else
             {
