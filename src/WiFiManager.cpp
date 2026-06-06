@@ -28,11 +28,17 @@ namespace WiFiManager
             eventsRegistered = true;
         }
 
-        static unsigned long lastTry = ULONG_MAX;
-        if (millis() - lastTry < WIFI_CONNECTION_TRY_COOLDOWN || WiFi.getMode() == WIFI_MODE_AP)
-        {
+        // AP-/Provisioning-Modus laeuft eigenstaendig — nichts nachzuziehen.
+        if (WiFi.getMode() == WIFI_MODE_AP)
             return;
-        }
+
+        // Cooldown gilt nur fuer Folge-Versuche; der erste Connect laeuft sofort
+        // (frueher verzoegerte der ULONG_MAX-Startwert ihn um ~10 s).
+        static unsigned long lastTry = 0;
+        static bool everTried = false;
+        if (everTried && millis() - lastTry < WIFI_CONNECTION_TRY_COOLDOWN)
+            return;
+
         char ssid[SSID_LEN] = {};
         char pw[PW_LEN] = {};
         bool provisioned = false;
@@ -41,9 +47,7 @@ namespace WiFiManager
         InternalStorage::readString("password", pw, sizeof(pw));
         InternalStorage::readBool("provisioned", provisioned);
         InternalStorage::end();
-        WiFi.disconnect(true);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        WiFi.setAutoConnect(true);
+
         if (ssid[0] == '\0' || !provisioned)
         {
             char apSsid[32] = {};
@@ -55,34 +59,53 @@ namespace WiFiManager
             WiFi.softAP(apSsid);
             HttpServer::begin();
             Serial.println(WiFi.softAPIP());
+            return;
         }
-        else
+
+        // STA-Connect anstossen. setAutoReconnect laesst den WiFi-Treiber
+        // transiente Drops selbst abfangen; kein disconnect(true)+Delay mehr —
+        // das power-cyclete den Funk und blockierte 1 s pro Versuch.
+        everTried = true;
+        WiFi.mode(WIFI_STA);
+        WiFi.setAutoReconnect(true);
+        WiFi.begin(ssid, pw);
+        unsigned long loopStart = millis();
+        while (!isConnected() && millis() - loopStart < WIFI_CONNECTION_TIMEOUT)
         {
-            WiFi.mode(WIFI_STA);
-            WiFi.begin(ssid, pw);
-            unsigned long loopStart = millis();
-            while (!isConnected() && millis() - loopStart < WIFI_CONNECTION_TIMEOUT)
-            {
-                vTaskDelay(pdMS_TO_TICKS(500));
-            }
-            lastTry = millis();
-            if (isConnected())
-            {
-                HttpServer::begin();
-                Serial.println(WiFi.localIP());
-                // Modem-Sleep: Voraussetzung fuer esp_sleep_enable_wifi_wakeup.
-                // Der AP puffert, die Station wacht am DTIM-Beacon -> eingehende
-                // TCP-Anfrage weckt den schlafenden C3.
-                esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-            }
-            else
-            {
-                HttpServer::end();
-            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        lastTry = millis();
+        if (isConnected())
+        {
+            HttpServer::begin(); // idempotent -> kein Re-begin-Leak bei Reconnect
+            Serial.println(WiFi.localIP());
+            // Modem-Sleep: Voraussetzung fuer esp_sleep_enable_wifi_wakeup.
+            // Der AP puffert, die Station wacht am DTIM-Beacon -> eingehende
+            // TCP-Anfrage weckt den schlafenden C3.
+            esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         }
     }
     bool isConnected()
     {
         return WiFi.status() == WL_CONNECTED;
+    }
+
+    void heartbeat()
+    {
+        constexpr unsigned long HEARTBEAT_MS = 5000UL;
+        static unsigned long last = 0;
+        if (millis() - last < HEARTBEAT_MS)
+            return;
+        last = millis();
+        if (isConnected())
+        {
+            IPAddress ip = WiFi.localIP(); // Oktette einzeln -> kein String/Heap
+            Serial.printf("[INFO] up %lu ms | connected %u.%u.%u.%u | rssi %d\n",
+                          millis(), ip[0], ip[1], ip[2], ip[3], WiFi.RSSI());
+        }
+        else
+        {
+            Serial.printf("[INFO] up %lu ms | DISCONNECTED\n", millis());
+        }
     }
 }

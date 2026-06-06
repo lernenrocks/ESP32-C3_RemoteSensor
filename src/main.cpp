@@ -89,6 +89,10 @@ void loop()
 {
   checkFactoryReset();
 
+#ifdef DISABLE_LIGHT_SLEEP
+  WiFiManager::heartbeat(); // debug-only Zustandsausgabe; im Sleep-Build still
+#endif
+
   if (!WiFiManager::isConnected())
   {
     // AP-/Provisioning-Modus oder STA-Reconnect: kein Sleep, Requests aber

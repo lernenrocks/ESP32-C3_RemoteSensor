@@ -15,6 +15,7 @@ constexpr unsigned long REQUEST_READ_TIMEOUT_MS = 1500UL;
 namespace
 {
     WiFiServer server(80);
+    bool serverRunning = false;
     char requestHeader[BUFFER_SIZE] = {};
 
     void printSensorInfo(WiFiClient &client)
@@ -58,11 +59,17 @@ namespace HttpServer
 
     void begin()
     {
+        if (serverRunning)
+            return;
         server.begin();
+        serverRunning = true;
     }
     void end()
     {
+        if (!serverRunning)
+            return;
         server.end();
+        serverRunning = false;
     }
     bool handle()
     {
