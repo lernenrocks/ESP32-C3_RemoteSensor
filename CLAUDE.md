@@ -102,7 +102,12 @@ MainUnit kennt: Schwellwert, Hysterese, Tara-Offset
 - Beispiel HX711: Sensor-Offset (leere Wägeplatte) → C3 / Tankgewicht (leerer Tank) → MainUnit
 
 ### Betrieb
-- **Light Sleep** zwischen Abfragen: WiFi-Assoziation bleibt aktiv, eingehende TCP-Verbindung weckt den C3 sofort; spart Strom auch bei kabelgebundener Versorgung
+- **Light Sleep** zwischen Abfragen (implementiert, Option B): manuelles `esp_light_sleep_start()` in `loop()`, gegated auf `isConnected()` — der C3 schläft nur im verbundenen STA-Betrieb, nie während Reconnect oder AP-Modus. WiFi-Assoziation bleibt aktiv, eingehende TCP-Verbindung weckt den C3.
+  - **Wakeup-Quellen**: WiFi (eingehende Anfrage) + GPIO9 (Factory-Reset). Bewusst kein Timer, kein UART.
+  - **Pflicht-Kopplung**: `esp_sleep_enable_wifi_wakeup()` funktioniert nur mit `esp_wifi_set_ps(WIFI_PS_MIN_MODEM)` (in WiFiManager nach Connect gesetzt). Der C3 wacht am DTIM-Beacon (~4–5×/s).
+  - **Nach dem Wake**: kurzes Wach-Fenster (`HTTP_GRACE_MS`, 200ms) pumpt `HttpServer::handle()`, bis der TCP-Handshake durch ist; behandelt `ESP_ERR_SLEEP_REJECT` (259) als Normalfall (pending WiFi-RX), nicht als Fehler.
+  - **USB-Konsole stirbt im Sleep**: Der USB-Serial-JTAG wird im Light Sleep abgeschaltet → Serial-Monitor flappt, Port enumeriert neu (ttyACM0↔1). Sleep daher über WiFi beobachten (`/status`, `wake_count`), nicht über die Konsole. Debug-Build ohne Sleep via `-D DISABLE_LIGHT_SLEEP` (siehe PlatformIO-Struktur).
+  - **Option B statt automatic light sleep (A)**: A bräuchte `esp_pm_configure` + Tickless-Idle im sdkconfig — im Arduino-Framework nur per Build-Migration. B verifiziert: 1,5h stabil bei RSSI −54, kein Heap-Leck, Reconnect erholt sich selbst (Out-of-Range-Test).
 - Kabelgebundene Stromversorgung
 - Pollrate wird vom MainUnit bestimmt (adaptiv: 2–3s während Beregnung, 30s im Normalbetrieb)
 
@@ -140,7 +145,7 @@ Der C3 führt dann aus:
 - berechnet `scale = (raw_mit_gewicht - offset) / ref_weight`
 - ab sofort gibt `GET /sensors` kalibrierte Gramm zurück
 
-**Achtung**: Kalibrierungswerte leben aktuell nur im RAM — nach Neustart ist neu zu kalibrieren (NVS folgt später).
+**Hinweis**: Kalibrierungswerte werden in NVS persistiert (Namespace `sensor_N`, Keys `offset`/`scale`) — sie überleben den Neustart. Siehe POST /reset/:idx und NVS-Struktur.
 
 **HX711-Kalibrierungsablauf (drei Schritte):**
 ```
@@ -218,9 +223,17 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
   "mac": "AA:BB:CC:DD:EE:FF",
   "uptime": 3600,
   "rssi": -65,
-  "chip_temp": 42.5
+  "chip_temp": 42.5,
+  "free_heap": 225804,
+  "min_free_heap": 212428,
+  "wake_count": 24507,
+  "version": "0.1.0"
 }
 ```
+
+- `free_heap` / `min_free_heap` — aktueller bzw. niedrigster je erreichter freier Heap (Low-Watermark = Leak-Indikator)
+- `wake_count` — abgeschlossene Light-Sleep/Wake-Zyklen; macht den Sleep über WiFi prüfbar (steigt im Betrieb, stagniert während eines Reconnects)
+- `version` — `FIRMWARE_VERSION`
 
 ---
 
@@ -320,16 +333,17 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 ### WiFiManager
 `include/WiFiManager.h` / `src/WiFiManager.cpp` — Namespace, keine Klasse.
 
-- `initWifi()` — Verbindungsaufbau mit Cooldown (30s) und Timeout (10s) pro Versuch; ruft intern `HttpServer::begin()` bzw. `HttpServer::end()` auf
+- `initWifi()` — Verbindungsaufbau/Reconnect mit Cooldown (10s, `WIFI_CONNECTION_TRY_COOLDOWN`) und Timeout (5s, `WIFI_CONNECTION_TIMEOUT`) pro Versuch. **Erster Connect läuft sofort** (kein Cooldown). Setzt `WiFi.setAutoReconnect(true)` → der WiFi-Treiber fängt transiente Drops selbst ab, `initWifi()` greift nur als Fallback. Nach erfolgreichem STA-Connect: `esp_wifi_set_ps(WIFI_PS_MIN_MODEM)` (Pflicht für den WiFi-Wakeup). Registriert einmalig einen Disconnect-Handler, der Abrisse als `[WARN] WiFi lost ... reason:N` loggt (RF-Diagnose: 200 = Beacon-Timeout, 201 = AP nicht gefunden).
 - `isConnected()` — wraps `WiFi.status() == WL_CONNECTED`
+- `heartbeat()` — **debug-only** (`DISABLE_LIGHT_SLEEP`): druckt alle 5s den Zustand (IP/RSSI oder `DISCONNECTED`). Heap-sicher (IP aus Oktetten, kein `String`). Im Sleep-Build still.
 - In `loop()` aufrufen wenn `!isConnected()` — kein Aufruf in `setup()`
 - **Abhängigkeit**: `WiFiManager` startet und stoppt den `HttpServer` — `HttpServer::begin()` nie direkt aufrufen
 
 ### HttpServer
 `include/HttpServer.h` / `src/HttpServer.cpp` — Namespace, keine Klasse.
 
-- `begin()` / `end()` — werden ausschließlich vom WiFiManager aufgerufen, nie direkt
-- `handle()` — in `loop()` aufrufen; nimmt eingehende Verbindung an, liest Header bis `\r\n\r\n`, routet zu Handler, sendet Response, schließt Verbindung
+- `begin()` / `end()` — werden ausschließlich vom WiFiManager aufgerufen, nie direkt. **Idempotent** (mehrfaches `begin()` ist no-op) → kein Listening-Socket-Leak, wenn der STA-Pfad bei Reconnect erneut `begin()`t.
+- `handle()` — in `loop()` aufrufen; nimmt eingehende Verbindung an, liest Header bis `\r\n\r\n` (mit 1,5s-Inaktivitäts-Timeout `REQUEST_READ_TIMEOUT_MS` gegen abgerissene/halb-offene Verbindungen), routet zu Handler, sendet Response, schließt Verbindung. **Gibt `bool` zurück** (true = Client bedient) — das Sleep-Wach-Fenster in `loop()` bleibt damit wach, solange Requests kommen.
 - Request-Buffer: 512 Bytes (reicht für Digest Auth Header)
 - POST `/calibrate`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
 
@@ -338,10 +352,13 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 [env:lolin_c3_mini]      ← einzige Build-Konfiguration, flach ohne extends
     platform, board, framework, partitions
     lib_deps: ArduinoJson, HX711, DHT sensor library
-    build_flags: PIN_FACTORY_RESET, HX711_DOUT, HX711_SCK, DHT22_DATA
+    build_flags: PIN_FACTORY_RESET, PIN_INTERNAL_LED, HX711_DOUT, HX711_SCK, DHT22_DATA
+    ; -D DISABLE_LIGHT_SLEEP   ← Debug-Flag, auskommentiert = Sleep an (Release)
 ```
 
 Keine Build-Flags für Sensortypen — der SensorManager kennt die Hardware direkt. Kein `#ifdef` für Sensorkonfiguration.
+
+**`DISABLE_LIGHT_SLEEP`** (Debug): einkommentieren → kein Light Sleep, USB-Serial-JTAG bleibt stabil (Konsole/Upload durchgehend), `WiFiManager::heartbeat()` aktiv. Default (auskommentiert) = Sleep an. Achtung: Nur **ein** Prozess kann den einen USB-CDC-Port halten (Monitor *oder* esptool) — bei „port busy" beim Upload erst den Monitor schließen.
 
 ### Anwendungsfälle
 - **Waage**: 1x HX711 → `sensor:0`
@@ -352,11 +369,13 @@ Keine Build-Flags für Sensortypen — der SensorManager kennt die Hardware dire
 
 ## Roadmap
 
-1. **HX711 + HTTP-Server** — GET /sensors, GET /status, GET /calibrationinfo, Digest Auth ← *aktuell*
-2. **Light Sleep** — zwischen Abfragen, WiFi-Assoziation aktiv
-3. **Provisioning-AP** — Factory Reset, HTML-Formular, NVS
-4. **NVS-Verschlüsselung** — Credentials sicher ablegen
-5. **OTA** — Standard-Partition-Scheme, Companion-App-Trigger
+1. **HX711 + HTTP-Server** — GET /sensors, GET /status, GET /calibrationinfo ✅
+2. **Light Sleep** — zwischen Abfragen, WiFi-Assoziation aktiv ✅ (Option B, manueller Sleep + Modem-Sleep, verifiziert)
+3. **Provisioning-AP** — Factory Reset, HTML-Formular, NVS ← *aktuell* (Routes + GPIO9-Factory-Reset vorhanden, HTML noch Platzhalter)
+4. **Digest Auth** — SHA-256 Challenge/Response auf den HTTP-Endpoints (siehe Abschnitt Authentifizierung)
+5. **Stromsparen durch CPU-Drosselung** — CPU-Taktreduktion zusätzlich zum Light Sleep (`setCpuFrequencyMhz` bzw. DFS)
+6. **NVS-Verschlüsselung** — Credentials sicher ablegen
+7. **OTA** — Standard-Partition-Scheme, Companion-App-Trigger
 
 ---
 
