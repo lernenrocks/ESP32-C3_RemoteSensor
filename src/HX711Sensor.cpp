@@ -29,7 +29,7 @@ bool HX711Sensor::getCalibrationJson(char *buffer, size_t len)
 {
     const char info[] =
         "[{\"instruction\":\"Remove all weight, then confirm\",\"key\":\"offset\"},"
-        "{\"instruction\":\"Add known weight\",\"key\":\"ref_weight\",\"ref\":\"ref_weight\"}]";
+        "{\"instruction\":\"Add known weight\",\"key\":\"ref_weight\",\"ref\":\"ref_weight\",\"unit\":\"g\"}]";
     size_t written = snprintf(buffer, len, "%s", info);
     return written < len;
 }

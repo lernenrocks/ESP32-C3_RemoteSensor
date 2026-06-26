@@ -2,6 +2,7 @@
 #include "SensorManager.h"
 #include <ArduinoJson.h>
 #include "InternalStorage.h"
+#include "ProvisioningPage.h"
 
 extern const char FIRMWARE_VERSION[];
 extern uint32_t wakeCount;
@@ -102,9 +103,9 @@ namespace HttpServer
         uint8_t sensorIdx;
         if (strstr(requestHeader, "GET / "))
         {
-            const char body[] = "<html><body><h1>SensorNode Provisioning</h1><p>HTML interface coming soon.</p></body></html>";
-            client.printf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(body));
-            client.print(body);
+            // Seite liegt im Flash (const char[]) -> direkt streamen, kein Heap.
+            client.printf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: %u\r\n\r\n", strlen(PROVISIONING_HTML));
+            client.print(PROVISIONING_HTML);
         }
         else if (strstr(requestHeader, "GET /sensors") != 0)
         {
@@ -122,21 +123,18 @@ namespace HttpServer
         {
             StaticJsonDocument<BODY_SIZE> doc;
             DeserializationError err = deserializeJson(doc, client);
-            if (!err)
+            if (err || doc["ssid"].isNull() || doc["password"].isNull())
             {
-                if (doc["ssid"].isNull() || doc["password"].isNull())
-                {
-                    client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-                }
+                // Parse-Fehler oder fehlende Felder: nichts schreiben, eine Response.
+                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            }
+            else
+            {
                 InternalStorage::begin("Wifi", false);
                 InternalStorage::writeString("ssid", doc["ssid"]);
                 InternalStorage::writeString("password", doc["password"]);
                 InternalStorage::end();
                 client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
-            }
-            else
-            {
-                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
             }
         }
         else if (sscanf(requestHeader, "POST /calibrate/%hhu", &sensorIdx) == 1)
