@@ -192,6 +192,17 @@ Setzt `provisioned = false` in NVS und rebootet. C3 startet im AP-Modus für Neu
 
 **Anwendungsfall**: C3 wird auf eine andere MainUnit übertragen, deren Netzwerkdaten beim Aufruf noch nicht bekannt sind (z. B. interaktive Neukonfiguration vor Ort über die GUI). Muss aufgerufen werden, **während der C3 noch im alten Netz erreichbar ist** — danach lässt er sich ohne AP-Fallback-Mechanismus (siehe Roadmap) nicht mehr per HTTP ansprechen. Ist das Ziel-Netzwerk beim Umzug schon bekannt, geht `POST /provision/wifi` + `POST /provision/finish` direkt, ganz ohne diesen Zwischenschritt — beide sind seit der Auth-Vereinheitlichung genau wie dieser Endpoint durch Digest Auth geschützt, egal ob AP oder STA.
 
+### POST /provision/password
+Setzt ein neues Gerätepasswort — Digest-Auth-Hash (`System/ha1`) **und** WPA2-Klartext (`System/password`) gleichzeitig. Kein Neustart, sofort aktiv.
+
+```json
+{ "password": "mindestens8Zeichen" }
+```
+
+Response: `200 OK` mit `{}` — `400 Bad Request` wenn `password` fehlt oder kürzer als 8 Zeichen ist (WPA2-PSK-Minimum, weil das Gerätepasswort auch das AP-Passwort ist; serverseitig geprüft, nicht nur in der GUI).
+
+**Achtung für die GUI**: Dieser Aufruf rekonfiguriert live das WPA2-Passwort des Onboarding-APs. Der Browser verliert dadurch die WLAN-Verbindung zum Gerät selbst, nicht nur die HTTP-Session — siehe "Auth im Browser" weiter unten.
+
 ### GET /calibrationinfo
 Beschreibt Sensortyp und Kalibrierungsschritte pro Sensor. Wird einmalig beim Onboarding abgefragt — die Companion App baut den Kalibrierungsworkflow dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
 
@@ -260,6 +271,13 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 - Neues Passwort muss mindestens 8 Zeichen haben (WPA2-PSK-Minimum, weil das Device-Passwort auch das AP-Passwort ist) — serverseitig in `POST /provision/password` geprüft, nicht nur clientseitig in der GUI.
 
 **Selbstbauer vs. Fertigprodukt-Kunden**: kein Unterschied mehr im Mechanismus, weil das Initial-Passwort ohnehin öffentlich ist. Ein Selbstbauer, der ein anderes Default-Passwort will, ändert einfach `initialPW.h` vor dem Kompilieren — kein separater Vertriebsweg oder Config-Mechanismus nötig.
+
+### Auth im Browser (verbindlich für die Provisioning-GUI)
+
+- **Digest Auth läuft transparent auf Browser-Ebene, nicht in JavaScript.** Bekommt der Browser eine `401`-Antwort mit `WWW-Authenticate: Digest`, zeigt er von sich aus einen nativen Login-Dialog — das betrifft `GET /` selbst genauso wie jeden `fetch()`-Aufruf aus dem geladenen JS heraus. Es gibt **keine** Möglichkeit, Digest-Credentials aus JavaScript an `fetch()` zu übergeben (kein Äquivalent zu curls `-u`) — von Browsern schlicht nicht vorgesehen. Nicht versuchen, Digest Auth in JS nachzubauen.
+- Einmal im nativen Dialog eingegeben, cached der Browser die Credentials für den Rest der Session auf **derselben Origin** — alle weiteren `fetch()`-Aufrufe der Seite (gleicher Host/Port) senden sie automatisch mit, ohne dass die Seite selbst irgendwas dafür tun muss. `ProvisioningPage.h`s bestehende `fetch()`-Aufrufe (`saveWifi()`, `loadSensors()`, etc.) machen deshalb bewusst nichts Auth-Spezifisches — kein Versehen, funktioniert einfach so.
+- **Fehlerantworten (400/401/404) haben einen leeren Body** (`Content-Length: 0`), nirgends im Backend eine JSON-Fehlermeldung. `response.json()` auf einer Fehlerantwort scheitert deshalb — Fehlerbehandlung in der GUI darf sich nur auf `response.ok`/`response.status` stützen, nie auf den Body.
+- **Größte Falle beim Passwort-Tab, unbedingt einplanen**: `POST /provision/password` ändert live das WPA2-Passwort des APs, mit dem der Browser gerade verbunden ist. Das ist ein Betriebssystem-Ebene-Problem, kein HTTP-Problem — die WLAN-Verbindung des Geräts (Laptop/Handy) zum C3-eigenen AP bricht ab, sobald das neue Passwort greift, unabhängig vom Browser. Die GUI kann das nicht automatisch reparieren; der User muss sein Betriebssystem-WLAN-Menü öffnen, sich mit dem **neuen** Passwort neu verbinden, und danach zur Seite zurückkehren. Klar kommunizieren ("Jetzt mit dem neuen WLAN-Passwort neu verbinden, dann hier fortfahren") statt stillschweigend auf eine Antwort zu warten, die nie ankommt — das ist bewusst eine offene UX-Entscheidung für die Umsetzung, kein vorgegebenes Muster.
 
 ---
 
