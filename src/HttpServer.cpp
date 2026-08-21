@@ -3,12 +3,18 @@
 #include <ArduinoJson.h>
 #include "InternalStorage.h"
 #include "ProvisioningPage.h"
+#include "DigestAuth.h"
+#include "DigestCrypto.h"
+#include "System.h"
 
 extern const char FIRMWARE_VERSION[];
 extern uint32_t wakeCount;
 
-constexpr uint BUFFER_SIZE = 512;
+constexpr uint BUFFER_SIZE = 1024;
 constexpr uint BODY_SIZE = 256;
+// WPA2-PSK verlangt mindestens 8 Zeichen -- das Device-Passwort dient auch
+// als AP-Passwort, also muss es diese Grenze einhalten.
+constexpr size_t MIN_PASSWORD_LEN = 8;
 // Inaktivitaets-Timeout beim Header-Lesen: bricht ab, wenn nach dem Verbinden
 // keine (weiteren) Daten kommen. Schuetzt vor halb-offenen/abgerissenen
 // Verbindungen, bei denen client.connected() haengen bleibt (kein RST).
@@ -100,6 +106,41 @@ namespace HttpServer
                 return false;
             }
         }
+        char method[8] = {};
+        char path[64] = {};
+        const char *sp1 = strchr(requestHeader, ' ');
+        if (sp1)
+        {
+            size_t mlen = (size_t)(sp1 - requestHeader);
+            if (mlen >= sizeof(method))
+                mlen = sizeof(method) - 1;
+            memcpy(method, requestHeader, mlen);
+            method[mlen] = '\0';
+
+            const char *sp2 = strchr(sp1 + 1, ' ');
+            if (sp2)
+            {
+                size_t plen = (size_t)(sp2 - (sp1 + 1));
+                if (plen >= sizeof(path))
+                    plen = sizeof(path) - 1;
+                memcpy(path, sp1 + 1, plen);
+                path[plen] = '\0';
+            }
+        }
+        char deviceHa1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
+        bool ownPassword = System::getActiveHa1(deviceHa1, sizeof(deviceHa1));
+        Serial.printf("[INFO] %s %s | ha1: %s\n", method, path, ownPassword ? "own" : "default");
+        if (!DigestAuth::verify(requestHeader, method, path, deviceHa1))
+        {
+            Serial.println("[WARN] auth failed");
+            char wwwAuth[160] = {};
+            DigestAuth::buildWwwAuthenticate(wwwAuth, sizeof(wwwAuth));
+            client.printf("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", wwwAuth);
+            client.stop();
+            return true;
+        }
+        Serial.println("[INFO] auth ok");
+
         uint8_t sensorIdx;
         if (strstr(requestHeader, "GET / "))
         {
@@ -119,7 +160,7 @@ namespace HttpServer
         {
             printCalibrationInfo(client);
         }
-        else if (strstr(requestHeader, "POST /provision/wifi") != 0)
+        else if (strstr(requestHeader, "POST /provision/wifi ") != 0)
         {
             StaticJsonDocument<BODY_SIZE> doc;
             DeserializationError err = deserializeJson(doc, client);
@@ -164,6 +205,14 @@ namespace HttpServer
         }
         else if (strstr(requestHeader, "POST /provision/finish"))
         {
+            char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
+            if (!System::getActiveHa1(ha1, sizeof(ha1)))
+            {
+                Serial.println("[WARN] finish blocked: no device password set");
+                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                client.stop();
+                return true;
+            }
             InternalStorage::begin("Wifi", false);
             InternalStorage::writeBool("provisioned", true);
             InternalStorage::end();
@@ -173,7 +222,7 @@ namespace HttpServer
             Serial.println("restart now");
             ESP.restart();
         }
-        else if (strstr(requestHeader, "POST /reset"))
+        else if (strstr(requestHeader, "POST /provision/wifi/reset") != 0)
         {
             InternalStorage::begin("Wifi", false);
             InternalStorage::writeBool("provisioned", false);
@@ -183,6 +232,25 @@ namespace HttpServer
             delay(100);
             Serial.println("restart now");
             ESP.restart();
+        }
+        else if (strstr(requestHeader, "POST /provision/password") != 0)
+        {
+            StaticJsonDocument<BODY_SIZE> doc;
+            DeserializationError err = deserializeJson(doc, client);
+            const char *pw = doc["password"];
+            if (err || doc["password"].isNull() || strlen(pw) < MIN_PASSWORD_LEN)
+            {
+                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            }
+            else
+            {
+                char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
+                DigestCrypto::computeHa1(pw, ha1, sizeof(ha1));
+                System::storeDeviceHa1(ha1);
+                System::storeDevicePassword(pw);
+                Serial.println("[INFO] device password updated");
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+            }
         }
         else
         {

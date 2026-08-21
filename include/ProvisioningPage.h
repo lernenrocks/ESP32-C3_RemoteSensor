@@ -7,9 +7,6 @@
 // Datengetrieben: Das JS baut die Sensor-Tabs aus GET /calibrationinfo auf,
 // damit hier kein Sensor-Wissen hartcodiert ist (gleiches Prinzip wie die
 // Companion App). Neue Sensortypen brauchen keine Aenderung an dieser Datei.
-//
-// Auth-Annahme: Provisioning laeuft unauthentifiziert im isolierten AP-Modus.
-// Wenn spaeter Digest Auth dazukommt, bleiben diese Endpoints ausgenommen.
 inline const char PROVISIONING_HTML[] = R"html(<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">

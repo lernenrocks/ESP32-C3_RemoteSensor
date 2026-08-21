@@ -1,10 +1,10 @@
 #include "WiFiManager.h"
 #include <WiFi.h>
-#include "wifi_config.h"
 #include <Arduino.h>
 #include "HttpServer.h"
 #include "InternalStorage.h"
 #include "esp_wifi.h"
+#include "System.h"
 
 #define WIFI_CONNECTION_TRY_COOLDOWN 10000UL
 #define WIFI_CONNECTION_TIMEOUT 5000UL
@@ -55,10 +55,13 @@ namespace WiFiManager
             WiFi.macAddress(mac);
             snprintf(apSsid, sizeof(apSsid), "SensorNode-%02X%02X%02X%02X%02X%02X",
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            char apPw[PW_LEN] = {};
+            System::getActivePassword(apPw, sizeof(apPw));
             WiFi.mode(WIFI_AP);
-            WiFi.softAP(apSsid);
+            WiFi.softAP(apSsid, apPw);
             HttpServer::begin();
-            Serial.println(WiFi.softAPIP());
+            IPAddress apIp = WiFi.softAPIP();
+            Serial.printf("[INFO] AP mode: SSID=%s IP=%u.%u.%u.%u\n", apSsid, apIp[0], apIp[1], apIp[2], apIp[3]);
             return;
         }
 
@@ -66,6 +69,7 @@ namespace WiFiManager
         // transiente Drops selbst abfangen; kein disconnect(true)+Delay mehr —
         // das power-cyclete den Funk und blockierte 1 s pro Versuch.
         everTried = true;
+        Serial.printf("[INFO] STA connect: ssid=\"%s\"\n", ssid);
         WiFi.mode(WIFI_STA);
         WiFi.setAutoReconnect(true);
         WiFi.begin(ssid, pw);

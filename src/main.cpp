@@ -5,6 +5,7 @@
 #include "InternalStorage.h"
 #include "esp_wifi.h"
 #include "esp_sleep.h"
+#include "DigestAuth.h"
 
 extern const char FIRMWARE_VERSION[] = "0.1.0";
 constexpr unsigned long FACTORY_RESET_TRESHOLD = 5000UL;
@@ -40,7 +41,7 @@ void checkFactoryReset()
     }
     else
     {
-      Serial.println("Factory Reset");
+      Serial.println("[WARN] Factory Reset triggered via GPIO9, erasing NVS...");
       InternalStorage::erase();
       ESP.restart();
     }
@@ -71,7 +72,7 @@ void checkFactoryReset()
 void setup()
 {
   Serial.begin(115200);
-  delay(1000);
+  delay(5000);
   pinMode(PIN_FACTORY_RESET, INPUT_PULLUP);
   pinMode(PIN_INTERNAL_LED, OUTPUT);
   digitalWrite(PIN_INTERNAL_LED, HIGH);

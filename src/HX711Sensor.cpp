@@ -36,7 +36,7 @@ bool HX711Sensor::getCalibrationJson(char *buffer, size_t len)
 void HX711Sensor::readRaw(float &buffer)
 {
     //! Increase averaging samples if values fluctuate; decrease if MainUnit TCP timeout is hit
-    buffer = static_cast<float>(_scale.get_units(5));
+    buffer = static_cast<float>(_scale.get_units(10));
 }
 int HX711Sensor::getPrecision()
 {
@@ -57,7 +57,7 @@ bool HX711Sensor::calibrate(const JsonObjectConst data)
     InternalStorage::begin(prefNameSpace, false);
     InternalStorage::writeLong(prefOffset, offset);
     _scale.set_offset(offset);
-    float newScale = _scale.get_value(5)/refWeight;
+    float newScale = _scale.get_value(10)/refWeight;
     InternalStorage::writeFloat(prefScale, newScale);
     InternalStorage::end();
     _scale.set_scale(newScale);

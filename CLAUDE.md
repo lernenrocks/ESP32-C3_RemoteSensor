@@ -187,10 +187,10 @@ Setzt `provisioned = true` in NVS und rebootet. Abschluss des Onboarding-Flows n
 
 **Achtung**: Response kommt nicht mehr an — C3 rebootet sofort.
 
-### POST /reset/credentials
-Setzt `provisioned = false` in NVS und rebootet. C3 startet im AP-Modus für Neukonfiguration — Kalibrierungsdaten bleiben erhalten.
+### POST /provision/wifi/reset
+Setzt `provisioned = false` in NVS und rebootet. C3 startet im AP-Modus für Neukonfiguration — Kalibrierungsdaten bleiben erhalten. SSID/Passwort in NVS werden dabei nicht gelöscht, nur der Provisionierungs-Status.
 
-Anwendungsfall: C3 von einer MainUnit auf eine andere übertragen.
+**Anwendungsfall**: C3 wird auf eine andere MainUnit übertragen, deren Netzwerkdaten beim Aufruf noch nicht bekannt sind (z. B. interaktive Neukonfiguration vor Ort über die GUI). Muss aufgerufen werden, **während der C3 noch im alten Netz erreichbar ist** — danach lässt er sich ohne AP-Fallback-Mechanismus (siehe Roadmap) nicht mehr per HTTP ansprechen. Ist das Ziel-Netzwerk beim Umzug schon bekannt, geht `POST /provision/wifi` + `POST /provision/finish` direkt, ganz ohne diesen Zwischenschritt — beide sind seit der Auth-Vereinheitlichung genau wie dieser Endpoint durch Digest Auth geschützt, egal ob AP oder STA.
 
 ### GET /calibrationinfo
 Beschreibt Sensortyp und Kalibrierungsschritte pro Sensor. Wird einmalig beim Onboarding abgefragt — die Companion App baut den Kalibrierungsworkflow dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
@@ -239,13 +239,27 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 
 ## Authentifizierung
 
-**Digest Auth (SHA-256)** — konsistent mit Shelly-Geräten im TerraControl-System.
+**Digest Auth (SHA-256)** — konsistent mit Shelly-Geräten im TerraControl-System. Gilt einheitlich für AP- und STA-Modus, keine Ausnahme für den unprovisionierten Zustand.
 
 - SHA-256 via mbedtls (auf ESP32-C3 verfügbar, Hardware-Beschleuniger)
-- **MAC im `realm`-Feld**: `terracontrol-c3-AABBCCDDEEFF` — MainUnit extrahiert MAC aus der Auth-Challenge beim Onboarding; kein separater /status-Aufruf nötig
+- **MAC im `realm`-Feld**: `terracontrol-c3-AABBCCDDEEFF` — MainUnit extrahiert MAC aus der Auth-Challenge beim Onboarding (kein separater /status-Aufruf nötig) **und laufend bei jedem weiteren Request**, um zu prüfen, ob hinter einer IP noch dieselbe MAC sitzt. Deshalb bewusst nicht durch `deviceName` ersetzbar — der ist user-änderbar, die MAC nicht.
 - Nonce-Generierung via `esp_random()`
-- Nonce-Expiry kann vereinfacht werden — C3 hängt am isolierten ESP32-AP, Replay-Angriffe praktisch ausgeschlossen
+- Nonce-Expiry kann vereinfacht werden — C3 hängt am isolierten ESP32-AP, Replay-Angriffe praktisch ausgeschlossen (Replay-Schutz perspektivisch gewünscht, Design offen)
 - Der MainUnit-DigestAuth-Client funktioniert unverändert gegen den C3-Server
+
+**Initial-Passwort: ein einziger, fester, öffentlich dokumentierter Wert.**
+- `"calibrateMe"`, in `include/initialPW.h` (`constexpr const char initialPW[]`), bewusst im Repo eingecheckt — kein Geheimnis, keine Zufallsgenerierung pro Gerät, kein Serial-Auslesen nötig.
+- **Begründung**: Digest Auth schützt nur, *wer* zugreifen darf, nicht *was* übertragen wird — die eigentliche Übertragungssicherheit liefert WPA2, und WPA2 muss dafür nicht geheim sein, nur vorhanden. Ein individuelles Passwort pro Gerät (z. B. MAC+Salt-Ableitung) wurde geprüft und verworfen: Single-Point-of-Failure beim Salt, kein echter Zusatznutzen, sobald die Pflicht-Änderung ohnehin greift.
+- **Werkspasswort und WPA2-Passwort des Onboarding-APs sind derselbe Wert** — `System::getActivePassword()`/`System::getActiveHa1()` liefern beides aus derselben Quelle (eigenes Passwort falls in NVS gesetzt, sonst `initialPW`).
+
+**Zwei Zustände, eine Existenzprüfung:**
+- Kein `System/ha1` in NVS → Gerät nutzt `initialPW` für WPA2 **und** Digest Auth (live berechnet via `DigestCrypto::computeHa1`, nie gespeichert).
+- `System/ha1` vorhanden → Gerät nutzt das selbst gewählte Passwort für beides.
+- Kein Sondermechanismus, kein Flag, das den Zustand über einen Factory Reset hinweg festhält — reine Existenzprüfung genügt (`System::getActiveHa1()`/`getActivePassword()`, `bool`-Rückgabe zeigt, welcher Fall gerade vorliegt).
+- Pflicht-Ersteinrichtung serverseitig erzwungen: `POST /provision/finish` verweigert den Abschluss, solange `System::getActiveHa1()` noch `false` liefert (noch kein eigenes Passwort) — sonst würden viele Selbstbauer das öffentliche Default nie ändern.
+- Neues Passwort muss mindestens 8 Zeichen haben (WPA2-PSK-Minimum, weil das Device-Passwort auch das AP-Passwort ist) — serverseitig in `POST /provision/password` geprüft, nicht nur clientseitig in der GUI.
+
+**Selbstbauer vs. Fertigprodukt-Kunden**: kein Unterschied mehr im Mechanismus, weil das Initial-Passwort ohnehin öffentlich ist. Ein Selbstbauer, der ein anderes Default-Passwort will, ändert einfach `initialPW.h` vor dem Kompilieren — kein separater Vertriebsweg oder Config-Mechanismus nötig.
 
 ---
 
@@ -256,6 +270,9 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 | `Wifi` | `ssid` | string | WLAN-SSID |
 | `Wifi` | `password` | string | WLAN-Passwort |
 | `Wifi` | `provisioned` | bool | `true` nach erfolgreichem Onboarding |
+| `System` | `ha1` | string | User-gesetzter Digest-Auth-Passwort-Hash — Existenz entscheidet, ob `initialPW` oder eigenes Passwort aktiv ist |
+| `System` | `password` | string | User-gesetztes Passwort im Klartext — fürs AP-WPA2, da Digest Auth nur den Hash liefert |
+| `System` | `name` | string | optionaler, rein kosmetischer Gerätename (AP-SSID/Hostname/Status-Feld) |
 | `sensor_N` | `offset` | long | Tara-Offset (leere Wägeplatte) |
 | `sensor_N` | `scale` | float | Skalierungsfaktor |
 
@@ -268,18 +285,20 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 **Boot-Logik im WiFiManager:**
 - `Wifi`-Namespace nicht vorhanden oder `provisioned = false` → AP-Modus, `GET /` liefert HTML-Seite
 - `provisioned = true` → STA-Modus, normaler WiFi-Connect, Webserver für REST-API
+- Der WLAN-Provisionierungsstatus (AP/STA) ist unabhängig vom Passwort-Status — ein Gerät kann bereits im STA-Modus laufen und trotzdem noch das Werkspasswort (`initialHa1`) tragen, falls die Ersteinrichtung dort noch nicht abgeschlossen wurde.
 
 **Onboarding-Flow:**
-1. C3 öffnet AP (`TerraControl-C3-AABBCC`) — kein WiFi konfiguriert
-2. User verbindet sich mit AP, öffnet Browser → `GET /`
-3. WiFi-Tab: SSID + Passwort eingeben → `POST /provision/wifi`
-4. Sensor-Tabs: Kalibrierungsschritte pro Sensor → `POST /calibrate/:idx`
-5. Zusammenfassung → `POST /provision/finish` → C3 setzt `provisioned = true`, rebootet
-6. C3 verbindet sich mit WiFi → Normalbetrieb
+1. C3 öffnet AP (`SensorNode-AABBCCDDEEFF`, MAC-basiert) — kein WiFi konfiguriert
+2. User verbindet sich mit AP (WPA2, Initial-Passwort `calibrateMe`), öffnet Browser → `GET /`
+3. **Passwort-Tab (Pflicht, zuerst)**: "Lege ein Gerätepasswort fest" — setzt `System/ha1` + `System/password` in NVS, rekonfiguriert gleichzeitig das WPA2-Passwort des APs auf denselben Wert. Verbindung bricht dabei ab, User muss sich mit dem neuen Passwort neu verbinden, bevor es weitergeht.
+4. WiFi-Tab: SSID + Passwort eingeben → `POST /provision/wifi`
+5. Sensor-Tabs: Kalibrierungsschritte pro Sensor → `POST /calibrate/:idx`
+6. Zusammenfassung → `POST /provision/finish` → C3 setzt `provisioned = true`, rebootet. Verweigert den Abschluss, solange `System::getActiveHa1()` noch `false` liefert (kein eigenes Passwort gesetzt).
+7. C3 verbindet sich mit WiFi → Normalbetrieb
 
-**GPIO9 beim Boot gedrückt halten** → Factory Reset (löscht alle NVS-Daten, rebootet in AP-Modus)
+**GPIO9 beim Boot gedrückt halten** → Factory Reset (löscht WLAN, Kalibrierung, `System/ha1` + `System/password` — der öffentliche `initialPW`-Default wird dadurch automatisch wieder aktiv, rebootet in AP-Modus)
 
-**`POST /reset/credentials`** → nur `provisioned = false`, Kalibrierung bleibt erhalten — für Netzwechsel ohne Neukalibrierung
+**`POST /provision/wifi/reset`** → nur `provisioned = false`, Kalibrierung bleibt erhalten — für einen Netzwechsel, dessen Ziel beim Aufruf noch nicht feststeht (siehe REST-API-Abschnitt für die Abgrenzung zu `/provision/wifi` + `/provision/finish`)
 
 ---
 
@@ -293,9 +312,11 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 
 ## Sicherheit
 
+- **Verboten: unverschlüsselter/unauthentifizierter Netzwerkzugriff, in jedem Zustand.** Weder der Onboarding-AP noch die Auth dürfen jemals "offen bis zur ersten Aktion" oder "offen für ein Zeitfenster" laufen — auch nicht kurzzeitig. WPA2 und Digest Auth sind ab dem allerersten Paket aktiv, mit dem öffentlichen, festen Initial-Passwort (`calibrateMe`, siehe Authentifizierung) bis der User ein eigenes setzt. Das Initial-Passwort kann nicht "verloren gehen", weil es öffentlich dokumentiert ist — einfach nachschlagen. Wiederherstellung ist nur bei einem vergessenen **eigenen** Passwort nötig: vollständiger Chip-Erase + Reflash (lokal via PlatformIO für den Entwickler, via Web-Flash-Tool/WebSerial für einen Kunden ohne Dev-Setup — WebSerial läuft nicht in Safari, weder iOS noch Mac).
 - **NVS-Verschlüsselung** (AES-256, Schlüssel in eFuse, Hardware-Beschleuniger) — verhindert Credential-Extraktion bei gestohlenen Geräten. Da Firmware öffentlich ist, schützt Flash-Verschlüsselung keine IP — NVS-Verschlüsselung reicht für Credential-Schutz.
 - **JTAG deaktivieren** — ohne JTAG-Sperre können Credentials aus dem RAM eines laufenden Geräts ausgelesen werden, auch wenn NVS verschlüsselt ist. Angriff: physischer Zugang + laufendes Gerät + JTAG-Interface → RAM-Dump → Credentials im Klartext. ESP32-C3 erlaubt JTAG per eFuse dauerhaft zu deaktivieren.
 - Für Marktreife: Secure Boot + vollständige Flash-Verschlüsselung
+- **Secure Boot V2 für signierte OTA-Updates** (RSA-3072, öffentlicher Schlüssel in eFuse, privater Schlüssel bleibt beim Hersteller) — ermöglicht Ferngesteuertes Zurücksetzen des Admin-Passworts per signiertem OTA-Update, ohne dass eine geteilte Passwortliste auf den Geräten liegt. eFuses sind einmalig/unumkehrbar beschreibbar — sorgfältiges Schlüsselmanagement nötig, privater Schlüssel darf nie verlorengehen. Zurückgestellt, aktuell reicht lokales Neu-Kompilieren + USB-Reflash.
 
 ---
 
@@ -330,10 +351,41 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 - Kalibrierungsparameter in NVS: Skalierungsfaktor + Tara
 - Anzahl Messungen anpassen wenn Werte schwanken (erhöhen) oder TCP-Timeout der MainUnit überschritten wird (reduzieren)
 
+### DigestCrypto
+`include/DigestCrypto.h` / `src/DigestCrypto.cpp` — Namespace, keine Klasse.
+
+- Unterste Schicht der Auth-Kette — reine Krypto-/Hilfsfunktionen, kennt weder NVS noch HTTP. `DigestAuth` und `System` hängen beide nur nach hier unten ab, nie voneinander (bricht so einen sonst zwangsläufigen Zirkel: `System` braucht Hashing für den Default-Hash, `DigestAuth::verify()` bräuchte `System` fürs gespeicherte Ha1).
+- `sha256Hex(const char *input, char *output, size_t inLen)` — SHA-256 via mbedtls. `inLen` ist die **Input**-Länge (für `mbedtls_sha256`), nicht die Puffergröße von `output` — die ist immer fix 65 Bytes und wird von der Funktion selbst nicht geprüft; der Aufrufer muss vorher sicherstellen, dass `output` groß genug ist.
+- `buildRealm(char *out, size_t len)` — `terracontrol-c3-<MAC>`.
+- `generateNonce(char *out, size_t len)` — via `esp_random()`.
+- `computeHa1(const char *password, char *out, size_t outLen)` — `HA1 = SHA256("admin:<realm>:<password>")`, Username `admin` fest verdrahtet, privat im anonymen Namespace (kein Setter, kein User-änderbarer Wert).
+- Öffentliche `constexpr size_t SHA256_HEX_LEN=64, NONCE_HEX_LEN=16, REALM_BUF_LEN=32` — bewusst hier zentral und öffentlich statt privat pro Modul dupliziert: andere Module brauchen sie zum Dimensionieren eigener Stack-Puffer (`char buf[SHA256_HEX_LEN+1]`), das braucht einen compile-time-Wert — ein Getter könnte das nicht liefern, Array-Größen sind keine Laufzeitwerte.
+
+### DigestAuth
+`include/DigestAuth.h` / `src/DigestAuth.cpp` — Namespace, keine Klasse.
+
+- Reine Verifikationslogik, zustandslos — kennt weder NVS noch `System`.
+- `buildWwwAuthenticate(char *out, size_t len)` — baut den `WWW-Authenticate`-Header für die 401-Challenge (Realm + Nonce via `DigestCrypto`).
+- `verify(const char *authHeader, const char *method, const char *path, const char *ha1)` — prüft die Digest-Response gegen das übergebene `ha1`. Kein eigener NVS-Zugriff — der Aufrufer (`HttpServer`) holt `ha1` vorher selbst über `System::getActiveHa1()` und reicht es durch.
+- **`path` ist der tatsächliche Request-Pfad, nicht das `uri=`-Feld aus dem Authorization-Header** — matcht die Shelly-Gen2/3-Server-Konvention, gegen die der MainUnit-Client gebaut ist.
+
+### System
+`include/System.h` / `src/System.cpp` — Namespace, keine Klasse.
+
+- Einziger Besitzer des NVS-Namespace `System` (Gerätename, Device-Passwort + -Hash).
+- `loadDeviceName(buf, len)` / `storeDeviceName(name)` — rein kosmetisch, nie Teil der Digest-Auth-Realm oder des Usernamens.
+- `provideDeviceDefaultPassword(buf, len)` — Klartext-Default aus `initialPW.h`, nie in NVS gespeichert.
+- `loadDevicePassword(buf, len)` / `storeDevicePassword(pw)` — eigenes Passwort im Klartext (für `WiFi.softAP()`, da Digest Auth nur den Hash liefert).
+- `storeDeviceHa1(ha1)` — Hash-Setter, öffentlich.
+- `getActiveHa1(buf, len)` / `getActivePassword(buf, len)` — **einziger öffentlicher Lese-Weg** an Ha1/Passwort. Intern: eigenes `load...()`, bei leerem Ergebnis Fallback auf `provideDeviceDefault...()`. `bool`-Rückgabe zeigt, welcher Fall vorlag (`true` = eigenes Passwort aktiv, `false` = Default-Fallback) — kein `try`-Präfix, weil der Puffer *immer* gültig gefüllt wird, anders als bei der klassischen `TryGetValue`-Konvention.
+- `loadDeviceHa1()`/`provideDeviceDefaultHa1()` sind bewusst **privat** (anonymer Namespace) — nur `getActiveHa1()` erreicht sie, kein zweiter öffentlicher Weg an den Hash.
+- Load-Funktionen sind durchgängig `void` — Existenzprüfung läuft über den (vorher genullten) Puffer, nicht über einen Rückgabewert.
+
 ### WiFiManager
 `include/WiFiManager.h` / `src/WiFiManager.cpp` — Namespace, keine Klasse.
 
 - `initWifi()` — Verbindungsaufbau/Reconnect mit Cooldown (10s, `WIFI_CONNECTION_TRY_COOLDOWN`) und Timeout (5s, `WIFI_CONNECTION_TIMEOUT`) pro Versuch. **Erster Connect läuft sofort** (kein Cooldown). Setzt `WiFi.setAutoReconnect(true)` → der WiFi-Treiber fängt transiente Drops selbst ab, `initWifi()` greift nur als Fallback. Nach erfolgreichem STA-Connect: `esp_wifi_set_ps(WIFI_PS_MIN_MODEM)` (Pflicht für den WiFi-Wakeup). Registriert einmalig einen Disconnect-Handler, der Abrisse als `[WARN] WiFi lost ... reason:N` loggt (RF-Diagnose: 200 = Beacon-Timeout, 201 = AP nicht gefunden).
+- AP-Zweig holt sein WPA2-Passwort über `System::getActivePassword()` — kein offenes WLAN mehr, eigenes Passwort falls gesetzt, sonst `initialPW`. SSID ist immer MAC-basiert (`SensorNode-<MAC>`), unabhängig vom Passwort.
 - `isConnected()` — wraps `WiFi.status() == WL_CONNECTED`
 - `heartbeat()` — **debug-only** (`DISABLE_LIGHT_SLEEP`): druckt alle 5s den Zustand (IP/RSSI oder `DISCONNECTED`). Heap-sicher (IP aus Oktetten, kein `String`). Im Sleep-Build still.
 - In `loop()` aufrufen wenn `!isConnected()` — kein Aufruf in `setup()`
@@ -343,9 +395,11 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 `include/HttpServer.h` / `src/HttpServer.cpp` — Namespace, keine Klasse.
 
 - `begin()` / `end()` — werden ausschließlich vom WiFiManager aufgerufen, nie direkt. **Idempotent** (mehrfaches `begin()` ist no-op) → kein Listening-Socket-Leak, wenn der STA-Pfad bei Reconnect erneut `begin()`t.
-- `handle()` — in `loop()` aufrufen; nimmt eingehende Verbindung an, liest Header bis `\r\n\r\n` (mit 1,5s-Inaktivitäts-Timeout `REQUEST_READ_TIMEOUT_MS` gegen abgerissene/halb-offene Verbindungen), routet zu Handler, sendet Response, schließt Verbindung. **Gibt `bool` zurück** (true = Client bedient) — das Sleep-Wach-Fenster in `loop()` bleibt damit wach, solange Requests kommen.
-- Request-Buffer: 512 Bytes (reicht für Digest Auth Header)
-- POST `/calibrate`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
+- `handle()` — in `loop()` aufrufen; nimmt eingehende Verbindung an, liest Header bis `\r\n\r\n` (mit 1,5s-Inaktivitäts-Timeout `REQUEST_READ_TIMEOUT_MS` gegen abgerissene/halb-offene Verbindungen). **Digest-Auth-Gate greift für jede Route, ausnahmslos** — auch `GET /` und AP-Modus, kein Sonderfall mehr für den unprovisionierten Zustand. Holt sich `ha1` über `System::getActiveHa1()`, reicht es an `DigestAuth::verify()` durch; bei Erfolg Routing zum Handler, sonst 401. **Gibt `bool` zurück** (true = Client bedient) — das Sleep-Wach-Fenster in `loop()` bleibt damit wach, solange Requests kommen.
+- Request-Buffer: 1024 Bytes (`BUFFER_SIZE`), Body-Puffer für JSON-Endpoints: 256 Bytes (`BODY_SIZE`)
+- POST `/calibrate`, `/provision/wifi`, `/provision/password`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
+- `POST /provision/password` prüft serverseitig eine Mindestlänge von 8 Zeichen (`MIN_PASSWORD_LEN`, WPA2-PSK-Minimum) — nicht nur clientseitig in der GUI, da der Endpoint auch direkt per REST erreichbar ist
+- Debug-Logging (`[INFO]`/`[WARN]`) pro Request: Methode+Pfad+Ha1-Quelle (`own`/`default`), Auth-Ergebnis, geblockte Finish-Versuche, erfolgreiche Passwort-Updates
 
 ### PlatformIO-Struktur
 ```ini
@@ -371,11 +425,18 @@ Keine Build-Flags für Sensortypen — der SensorManager kennt die Hardware dire
 
 1. **HX711 + HTTP-Server** — GET /sensors, GET /status, GET /calibrationinfo ✅
 2. **Light Sleep** — zwischen Abfragen, WiFi-Assoziation aktiv ✅ (Option B, manueller Sleep + Modem-Sleep, verifiziert)
-3. **Provisioning-AP** — Factory Reset, HTML-Formular, NVS ← *aktuell* (Routes + GPIO9-Factory-Reset vorhanden, HTML noch Platzhalter)
-4. **Digest Auth** — SHA-256 Challenge/Response auf den HTTP-Endpoints (siehe Abschnitt Authentifizierung)
+3. **Provisioning-AP** — Factory Reset, GPIO9-Reset, HTML-Formular (WiFi + dynamische Sensor-Kalibrierung), NVS ✅ (end-to-end auf Hardware verifiziert)
+4. **Digest Auth** — SHA-256 Challenge/Response auf den HTTP-Endpoints (siehe Abschnitt Authentifizierung) ← *Backend fertig, GUI (Passwort-Tab) + Hardware-Test noch offen*
+   - Initial-Passwort ist ein einziger, öffentlich dokumentierter Wert (`calibrateMe`, siehe Authentifizierung) — kein Unterschied mehr zwischen Selbstbauer- und Fertigprodukt-Weg, kein Serial-Auslesen nötig. Wechsel zu einem eigenen Gerätepasswort ("Lege ein Gerätepasswort fest") ist **Pflicht**, serverseitig über `POST /provision/finish` erzwungen (`System::getActiveHa1()` muss `true` liefern) — sonst würden viele das öffentliche Default nie ändern.
+   - Module: `DigestCrypto` (Hashing/Realm/Nonce, zustandslos), `DigestAuth` (Verifikation, bekommt `ha1` als Parameter, kennt NVS nicht), `System` (Namespace `System`, einziger Besitzer der Credential-NVS-Zugriffe, öffentliche API nur `getActiveHa1()`/`getActivePassword()` fürs Lesen).
 5. **Stromsparen durch CPU-Drosselung** — CPU-Taktreduktion zusätzlich zum Light Sleep (`setCpuFrequencyMhz` bzw. DFS)
 6. **NVS-Verschlüsselung** — Credentials sicher ablegen
 7. **OTA** — Standard-Partition-Scheme, Companion-App-Trigger
+   - **Achtung bei Kombination mit Digest Auth**: Betrifft nur den Fertigprodukt-Weg (Selbstbauer kompilieren bei Bedarf ohnehin neu, kein OTA-Konflikt dort). Für Fertigprodukt-Kunden ist das Initial-Passwort individuell pro Gerät vergeben. Ein gemeinsames OTA-Image für mehrere Geräte würde dieses Schema aufbrechen (alle Geräte teilen sich dann denselben kompilierten Fallback-Wert). Lösung dafür bei Bedarf: Initial-Passwort aus MAC + einem gemeinsamen Salt ableiten (HMAC), analog zum bestehenden Realm-Muster — jedes Gerät bleibt eindeutig, kein externer Safe nötig. Nicht vor OTA umsetzen.
+
+### Kleinere Ergänzungen (additiv, nachrüstbar)
+- **GET /calibrationinfo um aktuelle Kalibrierwerte erweitern** — scale/offset pro Sensor mit ausliefern (Read-back). Damit kann die Companion App die aktuelle Kalibrierung anzeigen/prüfen, ohne dass dafür eine Firmware-Änderung nötig wird. Reale Lücke (schreiben + Beschreibung lesen geht, aktuelle Werte lesen nicht), aber niedrige Priorität.
+- **initWifi() nicht-blockierend + AP-Fallback nach N Fehlversuchen** — behebt (a) das stotternde GPIO9-Reset-Blinken (blockierender 5-s-Connect hungert `loop()` aus) und (b) die Lockout-Sackgasse bei falschen Credentials (Gerät hängt endlos im STA-Retry statt in den AP-Modus zu fallen → nur GPIO9-Factory-Reset rettet, mit Kalibrierungsverlust).
 
 ---
 
