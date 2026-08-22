@@ -22,3 +22,6 @@ void DHT22Humidity::readRaw(float &buffer){
 int DHT22Humidity::getPrecision(){
     return 1;
 }
+const char* DHT22Humidity::getUnit(){
+    return "%";
+}

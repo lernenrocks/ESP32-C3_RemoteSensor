@@ -2,6 +2,7 @@
 #include "InternalStorage.h"
 #include "DigestCrypto.h"
 #include "initialPW.h"
+#include <WiFi.h>
 
 namespace
 {
@@ -44,6 +45,20 @@ namespace System
         nvsBegin(false);
         InternalStorage::writeString(NAME_KEY, name);
         nvsEnd();
+    }
+
+    bool getActiveDeviceName(char *buffer, size_t len)
+    {
+        loadDeviceName(buffer, len);
+        if (buffer[0] == '\0')
+        {
+            uint8_t mac[6];
+            WiFi.macAddress(mac);
+            snprintf(buffer, len, "SensorNode-%02X%02X%02X%02X%02X%02X",
+                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            return false;
+        }
+        return true;
     }
 
     void provideDeviceDefaultPassword(char *buffer, size_t len)

@@ -10,6 +10,7 @@ public:
     bool getCalibrationJson(char *buffer, size_t len) override;
     bool getCalibrationValuesJson(char *buffer, size_t len) override;
     int getPrecision() override;
+    const char* getUnit() override;
     bool calibrate(const JsonObjectConst data) override;
     void reset() override;
 

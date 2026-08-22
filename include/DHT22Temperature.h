@@ -11,6 +11,7 @@ class DHT22Temperature : public SensorBase{
     bool getCalibrationJson(char *buffer, size_t len) override;
     bool getCalibrationValuesJson(char *buffer, size_t len) override;
     int getPrecision() override;
+    const char* getUnit() override;
     bool calibrate(const JsonObjectConst data) override { return true; }
     void reset() override { }
 

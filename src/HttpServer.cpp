@@ -57,6 +57,44 @@ namespace
         return connected;
     }
 
+    // Erste Stelle im Code, an der user-eingegebener Freitext (Geraetename) in
+    // handgebautes JSON eingebettet wird — Escaping ist laut CLAUDE.md Pflicht
+    // (\", \\, \n, \r, \t, \uXXXX), sonst kann ein Name das Response-JSON brechen.
+    void escapeJsonString(const char *in, char *out, size_t outLen)
+    {
+        size_t o = 0;
+        for (size_t i = 0; in[i] != '\0' && o + 1 < outLen; i++)
+        {
+            unsigned char c = (unsigned char)in[i];
+            const char *rep = nullptr;
+            switch (c)
+            {
+                case '"': rep = "\\\""; break;
+                case '\\': rep = "\\\\"; break;
+                case '\n': rep = "\\n"; break;
+                case '\r': rep = "\\r"; break;
+                case '\t': rep = "\\t"; break;
+            }
+            if (rep)
+            {
+                size_t rl = strlen(rep);
+                if (o + rl >= outLen) break;
+                memcpy(out + o, rep, rl);
+                o += rl;
+            }
+            else if (c < 0x20)
+            {
+                if (o + 6 >= outLen) break;
+                o += snprintf(out + o, outLen - o, "\\u%04x", c);
+            }
+            else
+            {
+                out[o++] = (char)c;
+            }
+        }
+        out[o] = '\0';
+    }
+
     void printSensorInfo(WiFiClient &client)
     {
         char buffer[BUFFER_SIZE] = {};
@@ -69,10 +107,28 @@ namespace
     {
         char mac[18] = {};
         WiFi.macAddress().toCharArray(mac, sizeof(mac));
+        char name[System::DEVICE_NAME_LEN] = {};
+        System::getActiveDeviceName(name, sizeof(name));
+        char nameEscaped[System::DEVICE_NAME_LEN * 6] = {};
+        escapeJsonString(name, nameEscaped, sizeof(nameEscaped));
+        char ssid[33] = {};
+        WiFi.SSID().toCharArray(ssid, sizeof(ssid));
+        char ssidEscaped[33 * 6] = {};
+        escapeJsonString(ssid, ssidEscaped, sizeof(ssidEscaped));
+        bool provisioned = false;
+        InternalStorage::begin("Wifi", true);
+        InternalStorage::readBool("provisioned", provisioned);
+        InternalStorage::end();
+        char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
+        bool passwordSet = System::getActiveHa1(ha1, sizeof(ha1));
         char buffer[BUFFER_SIZE] = {};
         snprintf(buffer, sizeof(buffer),
-                 "{\"mac\":\"%s\",\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u,\"min_free_heap\":%u,\"wake_count\":%u,\"version\":\"%s\"}",
+                 "{\"mac\":\"%s\",\"device_name\":\"%s\",\"ssid\":\"%s\",\"provisioned\":%s,\"password_set\":%s,\"uptime\":%lu,\"rssi\":%d,\"chip_temp\":%.1f,\"free_heap\":%u,\"min_free_heap\":%u,\"wake_count\":%u,\"version\":\"%s\"}",
                  mac,
+                 nameEscaped,
+                 ssidEscaped,
+                 provisioned ? "true" : "false",
+                 passwordSet ? "true" : "false",
                  millis(),
                  WiFi.RSSI(),
                  temperatureRead(),
@@ -295,6 +351,22 @@ namespace HttpServer
                 System::storeDeviceHa1(ha1);
                 System::storeDevicePassword(pw);
                 Serial.println("[INFO] device password updated");
+                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+            }
+        }
+        else if (strstr(requestHeader, "POST /provision/name") != 0)
+        {
+            StaticJsonDocument<BODY_SIZE> doc;
+            DeserializationError err = deserializeJson(doc, client);
+            const char *name = doc["name"];
+            if (err || doc["name"].isNull() || strlen(name) == 0)
+            {
+                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            }
+            else
+            {
+                System::storeDeviceName(name);
+                Serial.printf("[INFO] device name set to \"%s\"\n", name);
                 client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             }
         }

@@ -47,6 +47,10 @@ int HX711Sensor::getPrecision()
 {
     return 0;
 }
+const char* HX711Sensor::getUnit()
+{
+    return "g";
+}
 bool HX711Sensor::calibrate(const JsonObjectConst data)
 {
     if (data["offset"].isNull() || data["ref_weight"].isNull())

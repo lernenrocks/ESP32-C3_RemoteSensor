@@ -21,3 +21,6 @@ bool DHT22Temperature::getCalibrationValuesJson(char *buffer, size_t len){
 int DHT22Temperature::getPrecision(){
     return 1;
 }
+const char* DHT22Temperature::getUnit(){
+    return "°C";
+}

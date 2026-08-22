@@ -37,7 +37,6 @@ input{width:100%;padding:10px;border:1px solid #d3dad5;border-radius:8px;font:in
 input:focus{outline:0;border-color:#2e9e5b}
 button.primary{width:100%;margin-top:18px;padding:11px;border:0;border-radius:9px;background:#2e9e5b;color:#fff;font:inherit;font-weight:600;cursor:pointer}
 button.primary:active{background:#27814b}
-button.ghost{margin-top:8px;padding:9px 12px;border:1px solid #2e9e5b;border-radius:8px;background:#fff;color:#2e9e5b;font:inherit;cursor:pointer}
 button:disabled{opacity:.5;cursor:default}
 .sensor{border:1px solid #e3e8e4;border-radius:10px;padding:14px;margin-bottom:14px}
 .sensor h3{margin:0 0 2px;font-size:15px}
@@ -45,8 +44,9 @@ button:disabled{opacity:.5;cursor:default}
 .step{font-size:13px;margin-top:12px}
 .unitrow{display:flex;align-items:center;gap:8px;margin-top:4px}
 .unitrow input{flex:1}
+.unitrow button{width:auto;margin-top:0}
 .unit{font-size:13px;color:#516056}
-.captured{font-size:12px;color:#2e9e5b;margin-left:6px}
+.captured{display:block;font-size:12px;color:#2e9e5b;margin-top:4px}
 .msg{font-size:13px;margin-top:12px;min-height:16px}
 .ok{color:#2e9e5b}.err{color:#c0392b}
 .muted{color:#8a978d;font-size:13px}
@@ -55,21 +55,36 @@ button:disabled{opacity:.5;cursor:default}
 .statusGrid div:nth-child(even){font-weight:600;text-align:right}
 .live{font-weight:600;color:#1f2b22}
 .current{font-size:12px;color:#8a978d;margin-top:2px}
-a.recal{display:inline-block;font-size:12px;color:#2e9e5b;text-decoration:none;cursor:pointer;margin-top:6px}
+.sectionTitle{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#8a978d;margin:18px 0 8px;font-weight:600}
+.sectionTitle:first-of-type{margin-top:4px}
+.headerRefresh{margin-left:auto;padding:4px 10px;border:1px solid #d3dad5;border-radius:8px;background:#fff;color:#516056;font:inherit;font-size:16px;line-height:1;cursor:pointer}
+.setupBanner{background:#fff7e6;border:1px solid #f0c36d;border-radius:10px;padding:14px;margin-bottom:18px}
+.setupBannerTitle{font-weight:600;margin-bottom:6px}
 </style></head><body>
 <div class="card">
-  <h1>&#127807; SensorNode</h1>
+  <h1>&#127807; <span id="headerName">SensorNode</span><button class="headerRefresh" onclick="manualRefresh()" title="Refresh">&#8635;</button></h1>
   <div class="tabs">
     <button id="t0" class="active" onclick="tab(0)">Status</button>
     <button id="t1" onclick="tab(1)">Password</button>
     <button id="t2" onclick="tab(2)">WiFi</button>
     <button id="t3" onclick="tab(3)">Sensors</button>
-    <button id="t4" onclick="tab(4)">Finish</button>
   </div>
 
   <div id="p0" class="panel active">
+    <div id="setupBanner" class="setupBanner" style="display:none">
+      <div class="setupBannerTitle">Setup not finished</div>
+      <div class="muted" id="setupBannerText"></div>
+      <button class="primary" id="finishBtn" onclick="finish()" style="display:none">Finish &amp; Reboot</button>
+      <div id="finMsg" class="msg"></div>
+    </div>
+    <label>Device name</label>
+    <div class="unitrow">
+      <input id="devname" autocomplete="off">
+      <button class="primary" onclick="saveDeviceName()">Save</button>
+    </div>
+    <div id="nameMsg" class="msg"></div>
+    <div class="sectionTitle">System Info</div>
     <div id="statusGrid" class="statusGrid"><div class="muted">Loading&hellip;</div></div>
-    <div id="statusSensors"><div class="muted">Loading sensors&hellip;</div></div>
   </div>
 
   <div id="p1" class="panel">
@@ -84,6 +99,7 @@ a.recal{display:inline-block;font-size:12px;color:#2e9e5b;text-decoration:none;c
 
   <div id="p2" class="panel">
     <p class="muted">Also usable while running normally, e.g. to move this node to a different MainUnit.</p>
+    <div id="wifiStatusGrid" class="statusGrid"><div class="muted">Loading&hellip;</div></div>
     <label>Network name (SSID)</label>
     <input id="ssid" autocomplete="off">
     <label>Password</label>
@@ -96,36 +112,89 @@ a.recal{display:inline-block;font-size:12px;color:#2e9e5b;text-decoration:none;c
     <div id="sensors"><div class="muted">Loading sensors&hellip;</div></div>
   </div>
 
-  <div id="p4" class="panel">
-    <p class="muted">Password set, WiFi saved and sensors calibrated? Then finish setup
-    &mdash; the SensorNode reboots and connects to the network.</p>
-    <button class="primary" onclick="finish()">Finish &amp; Reboot</button>
-    <div id="finMsg" class="msg"></div>
-  </div>
 </div>
 <script>
+// 6s statt 2s: mehrere gleichzeitig offene Browser/Tabs sollen den C3 nicht
+// dauerbeschaeftigen (jeder Poll ist ein Wake-Zyklus, siehe Light Sleep in
+// CLAUDE.md). Manueller Refresh-Button im Header deckt den "sofort sehen"-Fall
+// ab, Visibility-Pause stoppt Polling komplett, solange der Browser-Tab im
+// Hintergrund ist.
+var POLL_MS=6000;
 var pollTimer=null;
+var currentTab=0;
 function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
-function tab(n){
-  for(var i=0;i<5;i++){document.getElementById('t'+i).classList.toggle('active',i==n);document.getElementById('p'+i).classList.toggle('active',i==n);}
-  stopPoll();
-  if(n==0){loadStatus();refreshLiveValues();pollTimer=setInterval(function(){loadStatus();refreshLiveValues();},2000);}
-  else if(n==3){refreshLiveValues();pollTimer=setInterval(refreshLiveValues,2000);}
+function pollOnce(n){
+  if(n==0){loadStatus();}
+  else if(n==2){loadWifiStatus();}
+  else if(n==3){refreshLiveValues();}
 }
+function startPollIfNeeded(){
+  stopPoll();
+  if(document.hidden) return;
+  if(currentTab==0||currentTab==2||currentTab==3) pollTimer=setInterval(function(){pollOnce(currentTab);},POLL_MS);
+}
+function tab(n){
+  currentTab=n;
+  for(var i=0;i<4;i++){document.getElementById('t'+i).classList.toggle('active',i==n);document.getElementById('p'+i).classList.toggle('active',i==n);}
+  pollOnce(n);
+  startPollIfNeeded();
+}
+function manualRefresh(){ pollOnce(currentTab); }
+document.addEventListener('visibilitychange', function(){
+  if(document.hidden) stopPoll();
+  else { pollOnce(currentTab); startPollIfNeeded(); }
+});
 function msg(el,t,ok){el.textContent=t;el.className='msg '+(ok?'ok':'err');}
-function goCalibrate(idx){tab(3);var el=document.getElementById('sensorcard_'+idx);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});}
 
 async function loadStatus(){
   var g=document.getElementById('statusGrid');
   try{
     var d=await (await fetch('/status')).json();
+    var hn=document.getElementById('headerName');
+    if(hn) hn.textContent=d.device_name;
+    var nameInput=document.getElementById('devname');
+    if(nameInput && document.activeElement!==nameInput) nameInput.value=d.device_name;
+    var banner=document.getElementById('setupBanner');
+    var bannerText=document.getElementById('setupBannerText');
+    var finishBtn=document.getElementById('finishBtn');
+    if(!d.provisioned){
+      banner.style.display='block';
+      if(d.password_set){
+        bannerText.textContent='Ready to go — finish setup to reboot into normal operation.';
+        finishBtn.style.display='block';
+      }else{
+        bannerText.textContent='Set a device password first (Password tab), then come back here to finish setup.';
+        finishBtn.style.display='none';
+      }
+    }else{
+      banner.style.display='none';
+    }
     g.innerHTML=
       '<div>Uptime</div><div>'+Math.floor(d.uptime/1000)+' s</div>'+
-      '<div>RSSI</div><div>'+d.rssi+' dBm</div>'+
       '<div>Chip-Temp</div><div>'+d.chip_temp.toFixed(1)+' &deg;C</div>'+
       '<div>Free Heap</div><div>'+d.free_heap+' B</div>'+
       '<div>Version</div><div>'+d.version+'</div>';
   }catch(e){g.innerHTML='<div class="err">Status not reachable</div>';}
+}
+
+async function loadWifiStatus(){
+  var g=document.getElementById('wifiStatusGrid');
+  try{
+    var d=await (await fetch('/status')).json();
+    g.innerHTML=
+      '<div>Connected to</div><div>'+(d.ssid?d.ssid:'&ndash; (not connected)')+'</div>'+
+      '<div>RSSI</div><div>'+d.rssi+' dBm</div>';
+  }catch(e){g.innerHTML='<div class="err">Status not reachable</div>';}
+}
+
+async function saveDeviceName(){
+  var name=document.getElementById('devname').value;
+  var m=document.getElementById('nameMsg');
+  if(!name){msg(m,'Name required',false);return;}
+  try{
+    var r=await fetch('/provision/name',{method:'POST',body:JSON.stringify({name:name})});
+    msg(m,r.ok?'Saved ✓':'Error ('+r.status+')',r.ok);
+  }catch(e){msg(m,'Connection failed',false);}
 }
 
 async function savePassword(){
@@ -156,67 +225,75 @@ async function saveWifi(){
 }
 
 var collected={};
+var sensorUnits={}; // aus /calibrationinfo gecacht — /sensors liefert die Einheit nicht bei jedem Poll mit
+var expandedSensors={}; // merkt Auf/Zu-Zustand ueber loadCalibrationInfo()-Rebuilds hinweg
+async function startCalibration(idx){
+  // Einmalige Aktion, kein Toggle mehr: Reset + Aufklappen. Der Button rendert
+  // sich danach gar nicht mehr (siehe loadCalibrationInfo) — nichts mehr zum
+  // Abbrechen, der Reset ist ja schon gelaufen.
+  var ok=false;
+  try{ var r=await fetch('/reset/'+idx,{method:'POST'}); ok=r.ok; }catch(e){}
+  expandedSensors[idx]=true;
+  await loadCalibrationInfo();
+  var m=document.getElementById('sMsg_'+idx); // erst NACH dem Neuaufbau holen, sonst stale
+  if(m) msg(m, ok?'Reset ✓ — sensor now at raw values':'Reset failed', ok);
+  refreshLiveValues();
+}
 async function loadCalibrationInfo(){
   var box=document.getElementById('sensors');
-  var statusBox=document.getElementById('statusSensors');
   var info;
   try{info=await (await fetch('/calibrationinfo')).json();}
-  catch(e){box.innerHTML='<div class="err">Could not load sensor info</div>';statusBox.innerHTML='';return;}
-  box.innerHTML='';statusBox.innerHTML='';
+  catch(e){box.innerHTML='<div class="err">Could not load sensor info</div>';return;}
+  box.innerHTML='';
   info.forEach(function(s){
     collected[s.index]={};
+    sensorUnits[s.index]=s.unit||'';
 
-    // Sensors tab: calibration card
     var el=document.createElement('div');el.className='sensor';el.id='sensorcard_'+s.index;
     var h='<h3>Sensor '+s.index+'</h3><div class="type">'+s.type+'</div>';
     h+='<div>Live: <span class="live" id="live_calib_'+s.index+'">&ndash;</span></div>';
     if(!s.steps||!s.steps.length){
       h+='<div class="muted">No calibration needed</div>';
     }else{
-      s.steps.forEach(function(st){
-        h+='<div class="step">'+st.instruction;
+      var cur=s.current||{};
+      if(Object.keys(cur).length){
+        h+='<div class="current">current: '+Object.keys(cur).map(function(k){return k+'='+cur[k];}).join(', ')+'</div>';
+      }
+      var open=!!expandedSensors[s.index];
+      if(!open){
+        h+='<button class="primary" onclick="startCalibration('+s.index+')">Reset and Calibrate</button>';
+      }
+      h+='<div id="calbody_'+s.index+'" style="display:'+(open?'block':'none')+'">';
+      s.steps.forEach(function(st,stepIdx){
+        h+='<div class="step">'+(stepIdx+1)+'. '+st.instruction;
         if(st.ref){
           h+='<div class="unitrow"><input type="number" id="in_'+s.index+'_'+st.key+'" placeholder="'+st.key+'">';
           if(st.unit) h+='<span class="unit">'+st.unit+'</span>';
           h+='</div>';
         }else{
-          h+='<br><button class="ghost" onclick="capture('+s.index+',\''+st.key+'\',this)">Capture raw value</button><span class="captured" id="cap_'+s.index+'_'+st.key+'"></span>';
+          h+='<button class="primary" onclick="capture('+s.index+',\''+st.key+'\',this)">Capture raw value</button><span class="captured" id="cap_'+s.index+'_'+st.key+'"></span>';
         }
         h+='</div>';
       });
       h+='<button class="primary" onclick="calibrate('+s.index+')">Calibrate</button><div class="msg" id="sMsg_'+s.index+'"></div>';
+      h+='</div>';
     }
     el.innerHTML=h;box.appendChild(el);
-
-    // Status tab: overview row
-    var se=document.createElement('div');se.className='sensor';
-    var sh='<h3>Sensor '+s.index+'</h3><div class="type">'+s.type+'</div>';
-    sh+='<div>Live: <span class="live" id="live_status_'+s.index+'">&ndash;</span></div>';
-    var cur=s.current||{};
-    if(Object.keys(cur).length){
-      sh+='<div class="current">current: '+Object.keys(cur).map(function(k){return k+'='+cur[k];}).join(', ')+'</div>';
-    }else{
-      sh+='<div class="muted">no calibration</div>';
-    }
-    if(s.steps&&s.steps.length){
-      sh+='<a class="recal" onclick="goCalibrate('+s.index+')">Calibrate &rarr;</a>';
-    }
-    se.innerHTML=sh;statusBox.appendChild(se);
   });
 }
 
 function setLive(idx,text){
-  ['live_status_','live_calib_'].forEach(function(p){
-    var el=document.getElementById(p+idx);
-    if(el) el.textContent=text;
-  });
+  var el=document.getElementById('live_calib_'+idx);
+  if(el) el.textContent=text;
 }
 async function refreshLiveValues(){
   try{
     var d=await (await fetch('/sensors')).json();
     Object.keys(d).forEach(function(k){
       var idx=k.split(':')[1];
-      setLive(idx, d[k].valid ? d[k].value : '&ndash;');
+      var s=d[k];
+      var unit=sensorUnits[idx];
+      setLive(idx, s.valid ? (s.value+(unit?' '+unit:'')) : '–');
     });
   }catch(e){}
 }
@@ -232,6 +309,7 @@ async function capture(idx,key,btn){
     cap.textContent=' = '+v;
   }catch(e){cap.textContent=' Error';cap.className='captured err';}
   btn.disabled=false;
+  refreshLiveValues();
 }
 
 async function calibrate(idx){
@@ -242,10 +320,18 @@ async function calibrate(idx){
   });
   try{
     var r=await fetch('/calibrate/'+idx,{method:'POST',body:JSON.stringify(body)});
-    msg(m,r.ok?'Calibrated ✓':'Error – check values',r.ok);
-    if(r.ok) loadCalibrationInfo(); // "current" Read-back neu laden
+    if(r.ok){
+      // Erfolg: Karte zurueck in den Ursprungszustand (zugeklappt) statt offen
+      // stehen zu lassen — die neuen Werte sieht man ja am Live-/Current-Wert.
+      expandedSensors[idx]=false;
+      await loadCalibrationInfo(); // "current" Read-back neu laden, Karte klappt zu
+    }else{
+      msg(m,'Error – check values',false); // Karte bleibt offen, damit die Eingaben korrigiert werden koennen
+    }
   }catch(e){msg(m,'Connection failed',false);}
+  refreshLiveValues();
 }
+
 
 async function finish(){
   var m=document.getElementById('finMsg');

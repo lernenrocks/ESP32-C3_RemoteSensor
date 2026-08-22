@@ -42,6 +42,12 @@ virtual ~SensorBase() = default;
     virtual int getPrecision()=0;
 
     /**
+     * @brief unit of the sensor's value, e.g. "g", "°C", "%"
+     * @return compile-time-constant string, never null
+     */
+    virtual const char* getUnit()=0;
+
+    /**
      * @brief calibrate the sensor with given data
      * @param data provided data for calibration
      * @return true, if calibration is succeeded. Also true if a sensor doesn't need calibration
