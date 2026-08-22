@@ -33,6 +33,11 @@ bool HX711Sensor::getCalibrationJson(char *buffer, size_t len)
     size_t written = snprintf(buffer, len, "%s", info);
     return written < len;
 }
+bool HX711Sensor::getCalibrationValuesJson(char *buffer, size_t len)
+{
+    size_t written = snprintf(buffer, len, "{\"offset\":%ld,\"scale\":%g}", _scale.get_offset(), _scale.get_scale());
+    return written < len;
+}
 void HX711Sensor::readRaw(float &buffer)
 {
     //! Increase averaging samples if values fluctuate; decrease if MainUnit TCP timeout is hit

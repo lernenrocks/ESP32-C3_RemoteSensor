@@ -10,6 +10,7 @@ class DHT22Humidity : public SensorBase{
     ~DHT22Humidity()=default;
     int getPrecision() override;
     bool getCalibrationJson(char *buffer, size_t len) override;
+    bool getCalibrationValuesJson(char *buffer, size_t len) override;
     bool calibrate(const JsonObjectConst data) override { return true; }
     void reset() override { }
 

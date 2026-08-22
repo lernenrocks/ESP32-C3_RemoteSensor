@@ -89,9 +89,11 @@ namespace SensorManager
         {
             char steps[256] = {};
             sensorArray[i].sensor->getCalibrationJson(steps, sizeof(steps));
+            char currentValues[64] = {};
+            sensorArray[i].sensor->getCalibrationValuesJson(currentValues, sizeof(currentValues));
             size_t written = snprintf(buf + offset, len - offset,
-                                      "{\"index\":%d,\"type\":\"%s\",\"steps\":%s},",
-                                      i, sensorArray[i].type, steps);
+                                      "{\"index\":%d,\"type\":\"%s\",\"steps\":%s,\"current\":%s},",
+                                      i, sensorArray[i].type, steps, currentValues);
             if (written >= len - offset)
             {
                 valid = false;

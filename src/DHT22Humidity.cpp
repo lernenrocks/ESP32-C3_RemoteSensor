@@ -11,6 +11,11 @@ bool DHT22Humidity::getCalibrationJson(char *buffer, size_t len){
     return written <len;
 }
 
+bool DHT22Humidity::getCalibrationValuesJson(char *buffer, size_t len){
+    size_t written = snprintf(buffer,len,"{}");
+    return written <len;
+}
+
 void DHT22Humidity::readRaw(float &buffer){
     buffer=_dht->readHumidity();
 }

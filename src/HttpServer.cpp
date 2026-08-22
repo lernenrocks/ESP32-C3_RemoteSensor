@@ -19,11 +19,43 @@ constexpr size_t MIN_PASSWORD_LEN = 8;
 // keine (weiteren) Daten kommen. Schuetzt vor halb-offenen/abgerissenen
 // Verbindungen, bei denen client.connected() haengen bleibt (kein RST).
 constexpr unsigned long REQUEST_READ_TIMEOUT_MS = 1500UL;
+// Timeout fuer den WLAN-Testconnect bei POST /provision/wifi — bewusst gleich
+// dem WIFI_CONNECTION_TIMEOUT aus WiFiManager.cpp, aber lokal dupliziert statt
+// geteilt: HttpServer haengt sonst von WiFiManager ab, WiFiManager schon von
+// HttpServer (startet/stoppt ihn) — ein echter Include-Zirkel auf Modulebene.
+constexpr unsigned long WIFI_TEST_CONNECT_TIMEOUT_MS = 5000UL;
 namespace
 {
     WiFiServer server(80);
     bool serverRunning = false;
     char requestHeader[BUFFER_SIZE] = {};
+
+    // Testet STA-Credentials, ohne den aktuellen Modus dauerhaft zu verlassen.
+    // Zwei Aufrufkontexte laut REST-API-Doku zu /provision/wifi:
+    //  - AP-Onboarding (provisioned=false): Modus AP+STA-Concurrent, damit der
+    //    bereits laufende Onboarding-AP fuer Browser/Handy aktiv bleibt.
+    //  - Netzwechsel im laufenden STA-Betrieb (provisioned=true, MainUnit-Umzug
+    //    mit bekanntem Zielnetz): kein AP vorhanden/konfiguriert -> reiner
+    //    STA-Test, sonst wuerde WIFI_MODE_APSTA kurzzeitig einen unkonfigurierten,
+    //    ungeschuetzten AP oeffnen (verboten, siehe Sicherheit in CLAUDE.md).
+    // In beiden Faellen wird am Ende exakt der Ausgangsmodus wiederhergestellt.
+    bool testStaConnect(const char *ssid, const char *password)
+    {
+        wifi_mode_t originalMode = WiFi.getMode();
+        wifi_mode_t testMode = (originalMode == WIFI_MODE_AP) ? WIFI_MODE_APSTA : WIFI_MODE_STA;
+        WiFi.persistent(false); // nur ein Test, kein Grund den WiFi-NVS-Blob zu beschreiben
+        WiFi.mode(testMode);
+        WiFi.begin(ssid, password);
+        unsigned long start = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TEST_CONNECT_TIMEOUT_MS)
+        {
+            delay(500);
+        }
+        bool connected = WiFi.status() == WL_CONNECTED;
+        WiFi.disconnect(true);
+        WiFi.mode(originalMode);
+        return connected;
+    }
 
     void printSensorInfo(WiFiClient &client)
     {
@@ -171,11 +203,25 @@ namespace HttpServer
             }
             else
             {
-                InternalStorage::begin("Wifi", false);
-                InternalStorage::writeString("ssid", doc["ssid"]);
-                InternalStorage::writeString("password", doc["password"]);
-                InternalStorage::end();
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+                const char *ssid = doc["ssid"];
+                const char *pw = doc["password"];
+                bool connected = testStaConnect(ssid, pw);
+                Serial.printf("[INFO] WiFi test-connect ssid=\"%s\": %s\n", ssid, connected ? "ok" : "failed");
+                // Nur bei Erfolg in NVS uebernehmen — bei Fehlschlag bleiben die
+                // alten (funktionierenden) Zugangsdaten stehen, damit initWifi()
+                // beim naechsten Reconnect-Versuch von selbst zum alten Netz
+                // zurueckfindet, statt mit kaputten neuen Daten haengen zu bleiben.
+                if (connected)
+                {
+                    InternalStorage::begin("Wifi", false);
+                    InternalStorage::writeString("ssid", ssid);
+                    InternalStorage::writeString("password", pw);
+                    InternalStorage::end();
+                }
+                char body[24] = {};
+                snprintf(body, sizeof(body), "{\"connected\":%s}\n", connected ? "true" : "false");
+                client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(body));
+                client.print(body);
             }
         }
         else if (sscanf(requestHeader, "POST /calibrate/%hhu", &sensorIdx) == 1)

@@ -28,6 +28,14 @@ virtual ~SensorBase() = default;
     virtual bool getCalibrationJson(char *buffer, size_t len)=0;
 
     /**
+     * @brief getter for the currently active calibration values (read-back)
+     * @param buffer buffer for the values, JSON object (e.g. {"offset":87244,"scale":0.0234})
+     * @param len length of the buffer
+     * @return buffer is valid. Sensors without calibration return "{}", still true
+     */
+    virtual bool getCalibrationValuesJson(char *buffer, size_t len)=0;
+
+    /**
      * @brief get specific precision of the sensor value
      * @return precision after comma
      */

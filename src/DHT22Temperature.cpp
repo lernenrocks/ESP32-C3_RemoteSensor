@@ -14,6 +14,10 @@ bool DHT22Temperature::getCalibrationJson(char *buffer, size_t len){
     size_t written = snprintf(buffer, len, "[]");
     return written < len;
 }
+bool DHT22Temperature::getCalibrationValuesJson(char *buffer, size_t len){
+    size_t written = snprintf(buffer, len, "{}");
+    return written < len;
+}
 int DHT22Temperature::getPrecision(){
     return 1;
 }

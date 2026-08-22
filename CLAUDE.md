@@ -174,13 +174,18 @@ Löscht alle NVS-Daten (Credentials + Kalibrierung aller Sensoren) und rebootet.
 Liefert die Provisioning-HTML-Seite. Nur sinnvoll im AP-Modus (kein WiFi konfiguriert oder `provisioned = false`). Im Normalbetrieb erreichbar aber nicht vorgesehen.
 
 ### POST /provision/wifi
-Speichert SSID und Passwort in NVS. Kein Neustart — Kalibrierung kann danach noch durchgeführt werden.
+Testet die übergebenen Credentials live, bevor sie übernommen werden. Kein Neustart — Kalibrierung kann danach noch durchgeführt werden.
 
 ```json
 { "ssid": "MyNetwork", "password": "secret" }
 ```
 
-Response: `200 OK` mit `{}` — `400 Bad Request` wenn `ssid` oder `password` fehlen.
+Response: `200 OK` mit `{"connected": true}` bzw. `{"connected": false}` — `400 Bad Request` wenn `ssid` oder `password` fehlen.
+
+**Live-Testconnect statt Blind-Speichern**: Der C3 verbindet sich testweise mit den übergebenen Daten (Timeout ~5s, wie `WIFI_CONNECTION_TIMEOUT`) und schreibt **nur bei Erfolg** in NVS. Der Ausgangszustand wird danach in jedem Fall wiederhergestellt:
+
+- **Im AP-Modus (Onboarding, `provisioned=false`)**: Testconnect läuft im AP+STA-Concurrent-Modus (`WIFI_MODE_APSTA`) — der eigene AP bleibt aktiv, Browser/Handy bleiben verbunden, die Response kommt zuverlässig an. Nach dem Test geht's zurück zu reinem AP, kein Dauerbetrieb im Concurrent-Modus (Kanal-Pinning würde die Verbindung des Browsers stören).
+- **Im STA-Modus (laufender Betrieb, z. B. Umzug zu neuer MainUnit bei bereits bekanntem Zielnetz)**: reiner STA-Test (kein APSTA — sonst würde kurzzeitig ein unkonfigurierter, ungeschützter AP aufgehen). **Achtung**: Der anfragende Client ist in diesem Fall meist selbst nur über die *gerade getestete* Verbindung erreichbar — die Response geht dabei häufig verloren, weil die eigene Verbindung während des Tests kurz getrennt wird. Bekanntes, akzeptiertes Verhalten, kein Bug. Bei Erfolg zieht der C3 über den normalen Reconnect-Zyklus in `WiFiManager::initWifi()` von selbst zum neuen Netz um (auch ohne `POST /provision/finish`); bei Fehlschlag bleiben die alten Zugangsdaten in NVS erhalten, der C3 findet von selbst zurück zum alten Netz.
 
 ### POST /provision/finish
 Setzt `provisioned = true` in NVS und rebootet. Abschluss des Onboarding-Flows nach WiFi + Kalibrierung.
@@ -204,27 +209,33 @@ Response: `200 OK` mit `{}` — `400 Bad Request` wenn `password` fehlt oder kü
 **Achtung für die GUI**: Dieser Aufruf rekonfiguriert live das WPA2-Passwort des Onboarding-APs. Der Browser verliert dadurch die WLAN-Verbindung zum Gerät selbst, nicht nur die HTTP-Session — siehe "Auth im Browser" weiter unten.
 
 ### GET /calibrationinfo
-Beschreibt Sensortyp und Kalibrierungsschritte pro Sensor. Wird einmalig beim Onboarding abgefragt — die Companion App baut den Kalibrierungsworkflow dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig.
+Beschreibt Sensortyp, Kalibrierungsschritte und die aktuell aktiven Kalibrierwerte pro Sensor. Wird beim Onboarding abgefragt — die Companion App baut den Kalibrierungsworkflow dynamisch daraus auf. Kein hardcodiertes Sensor-Wissen in der App nötig. Wird auch von der MainUnit gebraucht (aktuelle Werte, kein eigener Weg an `scale`/`offset` sonst) und ermöglicht der Companion App, die SensorNode auch ohne MainUnit-Bindung sinnvoll anzuzeigen.
 
-Array-Index = Sensor-ID. Jeder Schritt hat `instruction` (Anweisung an den User) und `key` (NVS-Schlüssel). Optional `ref` — wenn vorhanden, zeigt die App ein Eingabefeld für den Referenzwert.
+`index` = Sensor-ID (entspricht `sensor:N` in `GET /sensors`). Jeder Schritt in `steps` hat `instruction` (Anweisung an den User) und `key` (NVS-Schlüssel). Optional `ref` — wenn vorhanden, zeigt die App ein Eingabefeld für den Referenzwert. `current` liefert die **aktuell aktiven** Kalibrierwerte des Sensors als Read-back — `{}` bei Sensoren ohne Kalibrierung (z. B. DHT22).
 
 ```json
 [
   {
+    "index": 0,
     "type": "HX711",
     "steps": [
-      { "instruction": "Place empty scale", "key": "offset" },
-      { "instruction": "Add known weight",  "key": "ref_weight", "ref": "ref_weight" }
-    ]
+      { "instruction": "Remove all weight, then confirm", "key": "offset" },
+      { "instruction": "Add known weight", "key": "ref_weight", "ref": "ref_weight", "unit": "g" }
+    ],
+    "current": { "offset": 87244, "scale": 41.15 }
   },
   {
+    "index": 1,
     "type": "DHT22_TEMP",
-    "steps": []
+    "steps": [],
+    "current": {}
   }
 ]
 ```
 
 `raw_at_weight` liest der C3 beim `POST /calibrate` selbst — der Client übermittelt nur `offset` und `ref_weight`. `scale` berechnet der C3 aus `(raw_at_weight - offset) / ref_weight`.
+
+**Kein Restore-Pfad**: `current` ist rein informativ/dokumentierend. `offset` ließe sich direkt zurückschreiben, `scale` aber nicht ohne Live-Messung (`POST /calibrate` berechnet `scale` immer aus einer aktuellen Rohwert-Messung mit aufgelegtem Referenzgewicht) — ein Restore-Modus, der `scale` direkt annimmt, liefe technisch wieder auf eine neue Kalibrierung hinaus und wurde deshalb verworfen.
 
 ### GET /status
 Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboarding. Enthält auch die interne Chiptemperatur des ESP32-C3.
@@ -441,21 +452,30 @@ Keine Build-Flags für Sensortypen — der SensorManager kennt die Hardware dire
 
 ## Roadmap
 
+### Ziel für diese Version
+Drei Punkte, bewusst abgegrenzt gegen den Rest der Roadmap (siehe "Zurückgestellt" unten):
+1. **Provisioning-Page-GUI fertigstellen** — Passwort-Tab (Digest-Auth-Ersteinrichtung) **und** Anzeige der aktuellen Live-Messwerte pro Sensor (nicht nur Kalibrierschritte als Formular — die GUI soll beim Kalibrieren live zeigen, was der Sensor gerade misst).
+2. **`GET /calibrationinfo` um aktuelle Kalibrierwerte erweitern** (Read-back) — wird von der **MainUnit** gebraucht (nicht nur als Backup-Sicherheitsnetz für die Companion App) ✅ *Firmware fertig, Hardwaretest noch offen*
+3. **WLAN-Testconnect bei `POST /provision/wifi`** (AP+STA-Concurrent-Modus) ✅ *Firmware fertig, Hardwaretest noch offen*
+
 1. **HX711 + HTTP-Server** — GET /sensors, GET /status, GET /calibrationinfo ✅
 2. **Light Sleep** — zwischen Abfragen, WiFi-Assoziation aktiv ✅ (Option B, manueller Sleep + Modem-Sleep, verifiziert)
 3. **Provisioning-AP** — Factory Reset, GPIO9-Reset, HTML-Formular (WiFi + dynamische Sensor-Kalibrierung), NVS ✅ (end-to-end auf Hardware verifiziert)
-4. **Digest Auth** — SHA-256 Challenge/Response auf den HTTP-Endpoints (siehe Abschnitt Authentifizierung) ← *Backend fertig, GUI (Passwort-Tab) + Hardware-Test noch offen*
+4. **Digest Auth** — SHA-256 Challenge/Response auf den HTTP-Endpoints (siehe Abschnitt Authentifizierung) ← *Backend fertig, GUI (Passwort-Tab + Live-Messwerte) + Hardware-Test noch offen — Teil dieser Version*
    - Initial-Passwort ist ein einziger, öffentlich dokumentierter Wert (`calibrateMe`, siehe Authentifizierung) — kein Unterschied mehr zwischen Selbstbauer- und Fertigprodukt-Weg, kein Serial-Auslesen nötig. Wechsel zu einem eigenen Gerätepasswort ("Lege ein Gerätepasswort fest") ist **Pflicht**, serverseitig über `POST /provision/finish` erzwungen (`System::getActiveHa1()` muss `true` liefern) — sonst würden viele das öffentliche Default nie ändern.
    - Module: `DigestCrypto` (Hashing/Realm/Nonce, zustandslos), `DigestAuth` (Verifikation, bekommt `ha1` als Parameter, kennt NVS nicht), `System` (Namespace `System`, einziger Besitzer der Credential-NVS-Zugriffe, öffentliche API nur `getActiveHa1()`/`getActivePassword()` fürs Lesen).
-5. **Stromsparen durch CPU-Drosselung** — CPU-Taktreduktion zusätzlich zum Light Sleep (`setCpuFrequencyMhz` bzw. DFS)
-6. **NVS-Verschlüsselung** — Credentials sicher ablegen
-7. **OTA** — Standard-Partition-Scheme, Companion-App-Trigger
+5. **Stromsparen durch CPU-Drosselung** — CPU-Taktreduktion zusätzlich zum Light Sleep (`setCpuFrequencyMhz` bzw. DFS) — *zurückgestellt, nicht Teil dieser Version*
+6. **NVS-Verschlüsselung** — Credentials sicher ablegen — *zurückgestellt, nicht Teil dieser Version*
+7. **OTA** — Standard-Partition-Scheme, Companion-App-Trigger — *zurückgestellt, nicht Teil dieser Version*
    - **Achtung bei Kombination mit Digest Auth**: Betrifft nur den Fertigprodukt-Weg (Selbstbauer kompilieren bei Bedarf ohnehin neu, kein OTA-Konflikt dort). Für Fertigprodukt-Kunden ist das Initial-Passwort individuell pro Gerät vergeben. Ein gemeinsames OTA-Image für mehrere Geräte würde dieses Schema aufbrechen (alle Geräte teilen sich dann denselben kompilierten Fallback-Wert). Lösung dafür bei Bedarf: Initial-Passwort aus MAC + einem gemeinsamen Salt ableiten (HMAC), analog zum bestehenden Realm-Muster — jedes Gerät bleibt eindeutig, kein externer Safe nötig. Nicht vor OTA umsetzen.
 
 ### Kleinere Ergänzungen (additiv, nachrüstbar)
-- **GET /calibrationinfo um aktuelle Kalibrierwerte erweitern** — scale/offset pro Sensor mit ausliefern (Read-back). Zwei Motivationen: (a) macht die SensorNode über die Companion App auch **ohne MainUnit-Bindung** sinnvoll nutzbar (Ist-Zustand einsehen, ohne den Kalibrierablauf blind zu wiederholen); (b) dient als Sicherheitsnetz — App kann die Werte in ihrer eigenen DB sichern, falls der C3 mal neu aufgesetzt werden muss. **Kein Restore-Mechanismus geplant**: `offset` ließe sich direkt zurückschreiben, `scale` aber nicht ohne Live-Messung (`POST /calibrate` berechnet `scale` immer aus einer aktuellen Rohwert-Messung mit aufgelegtem Referenzgewicht) — ein Restore-Modus, der `scale` direkt annimmt, liefe technisch wieder auf eine neue Kalibrierung hinaus und wurde deshalb verworfen. Der Endpunkt bleibt rein informativ/dokumentierend, kein Rückschreibe-Pfad.
-- **Stotterndes GPIO9-Reset-Blinken** — ursprünglich auf den blockierenden 5-s-Connect in `initWifi()` zurückgeführt; Hardwaretest zeigt aber: mit `DISABLE_LIGHT_SLEEP` stottert es nicht mehr, Ursache vermutlich Light Sleep statt `initWifi()`. Bestätigungstest mit aktivem Light Sleep steht noch aus. Eigenständiges, kleines Thema, unabhängig vom WLAN-Testconnect unten.
-- **WLAN-Testconnect bei `POST /provision/wifi` (AP+STA-Concurrent-Modus)** — nächster konkreter Schritt: C3 bleibt im AP-Modus, testet parallel per `WIFI_MODE_APSTA` einen STA-Connect mit den übergebenen Credentials (Timeout wie `WIFI_CONNECTION_TIMEOUT`, ~5s), meldet Erfolg/Fehlschlag in der Response zurück. Danach STA wieder trennen, AP-only bis `POST /provision/finish` — kein Dauerbetrieb im Concurrent-Modus (Kanal-Pinning: eine aktive STA-Verbindung zwingt den eigenen AP auf den Kanal des Zielnetzes, würde bei Dauerbetrieb den Browser/das Handy am AP mehrfach kurz hängen lassen; zusätzlich unnötig langes Zeitfenster mit dem öffentlich bekannten Default-Passwort offen).
+- **GET /calibrationinfo um aktuelle Kalibrierwerte erweitern** — ✅ *Firmware fertig, Hardwaretest noch offen*. Neue virtuelle Methode `getCalibrationValuesJson()` auf `SensorBase` (NVI-Pattern, analog zu `getCalibrationJson()`) — `HX711Sensor` liest `_scale.get_offset()`/`_scale.get_scale()` direkt aus der Live-Instanz (nicht aus NVS, damit immer der tatsächlich aktive Wert zurückkommt), DHT22-Sensoren liefern `{}` (keine Kalibrierung). `SensorManager::getCalibrationInfoJson()` baut daraus das neue `"current"`-Feld pro Sensor. Details siehe REST-API-Abschnitt zu `GET /calibrationinfo`.
+- **Stotterndes GPIO9-Reset-Blinken** — *zurückgestellt, nicht Teil dieser Version*. Ursprünglich auf den blockierenden 5-s-Connect in `initWifi()` zurückgeführt; Hardwaretest zeigt aber: mit `DISABLE_LIGHT_SLEEP` stottert es nicht mehr, Ursache vermutlich Light Sleep statt `initWifi()`. Bestätigungstest mit aktivem Light Sleep steht noch aus.
+- **WLAN-Testconnect bei `POST /provision/wifi` (AP+STA-Concurrent-Modus)** — ✅ *Firmware fertig* (`HttpServer.cpp`, lokale Funktion `testStaConnect()` — bewusst **nicht** in `WiFiManager`, um keinen Include-Zirkel zu erzeugen: `WiFiManager` hängt schon von `HttpServer` ab, um ihn zu starten/stoppen). Merkt sich vor dem Test den Ausgangsmodus und stellt ihn danach in jedem Fall wieder her:
+  - **AP-Modus (Onboarding)**: Concurrent-Modus (`WIFI_MODE_APSTA`) — der eigene AP bleibt aktiv, Browser/Handy bleiben verbunden, kein Dauerbetrieb im Concurrent-Modus danach (Kanal-Pinning würde die Verbindung des Browsers stören).
+  - **STA-Modus (laufender Betrieb, Netzwechsel)**: reiner STA-Test, kein APSTA — sonst würde kurzzeitig ein unkonfigurierter, ungeschützter AP aufgehen. Response geht dabei oft verloren (die eigene Verbindung des anfragenden Clients ist ja die gerade getestete) — bekanntes, akzeptiertes Verhalten.
+  - NVS wird **nur bei Erfolg** beschrieben, siehe REST-API-Abschnitt zu `POST /provision/wifi` für Details zum Selbstheilungsverhalten bei Fehlschlag.
   - Löst die **Lockout-Sackgasse bei falschen Credentials** an der Wurzel — Fehler wird vor dem Umschalten auf reinen STA-Modus erkannt, nicht erst danach per Fallback-Heuristik. Ersetzt damit die früher angedachte Lösung "`initWifi()` nicht-blockierend + AP-Fallback nach N Fehlversuchen".
   - **Bewusst nicht gelöst**: Credentials waren beim Onboarding korrekt, funktionieren später nicht mehr (z. B. MainUnit-Tausch mit neuem Netz) — seltener Fall, Recovery bleibt GPIO9-Factory-Reset. Geprüfte und verworfene Alternative: periodisches SSID-Broadcasting über Serial — beißt sich mit Light Sleep, weil USB-Serial-JTAG im Sleep-Build abgeschaltet ist (nur im `DISABLE_LIGHT_SLEEP`-Debug-Build nutzbar, kein Produktionsweg).
 
