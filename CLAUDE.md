@@ -204,7 +204,7 @@ Setzt ein neues Gerätepasswort — Digest-Auth-Hash (`System/ha1`) **und** WPA2
 { "password": "mindestens8Zeichen" }
 ```
 
-Response: `200 OK` mit `{}` — `400 Bad Request` wenn `password` fehlt oder kürzer als 8 Zeichen ist (WPA2-PSK-Minimum, weil das Gerätepasswort auch das AP-Passwort ist; serverseitig geprüft, nicht nur in der GUI).
+Response: `200 OK` mit `{}` — `400 Bad Request` wenn `password` fehlt, kürzer als 8 oder länger als 63 Zeichen ist (WPA2-PSK-Minimum/-Maximum, weil das Gerätepasswort auch das AP-Passwort ist; serverseitig geprüft, nicht nur in der GUI). Die Obergrenze verhindert zusätzlich, dass `DigestCrypto::computeHa1()` ein sehr langes Passwort intern stillschweigend abschneidet.
 
 **Achtung für die GUI**: Dieser Aufruf rekonfiguriert live das WPA2-Passwort des Onboarding-APs. Der Browser verliert dadurch die WLAN-Verbindung zum Gerät selbst, nicht nur die HTTP-Session — siehe "Auth im Browser" weiter unten.
 
@@ -218,6 +218,7 @@ Beschreibt Sensortyp, Kalibrierungsschritte und die aktuell aktiven Kalibrierwer
   {
     "index": 0,
     "type": "HX711",
+    "unit": "g",
     "steps": [
       { "instruction": "Remove all weight, then confirm", "key": "offset" },
       { "instruction": "Add known weight", "key": "ref_weight", "ref": "ref_weight", "unit": "g" }
@@ -227,11 +228,14 @@ Beschreibt Sensortyp, Kalibrierungsschritte und die aktuell aktiven Kalibrierwer
   {
     "index": 1,
     "type": "DHT22_TEMP",
+    "unit": "°C",
     "steps": [],
     "current": {}
   }
 ]
 ```
+
+- `unit` (top-level, pro Sensor-Objekt) — `SensorBase::getUnit()`, z. B. `"g"`, `"°C"`, `"%"`. Nicht zu verwechseln mit dem gleichnamigen `unit`-Feld innerhalb eines `steps`-Eintrags (dort: Einheit des einzugebenden Referenzwerts).
 
 `raw_at_weight` liest der C3 beim `POST /calibrate` selbst — der Client übermittelt nur `offset` und `ref_weight`. `scale` berechnet der C3 aus `(raw_at_weight - offset) / ref_weight`.
 
@@ -243,6 +247,10 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 ```json
 {
   "mac": "AA:BB:CC:DD:EE:FF",
+  "device_name": "Waage-Terrasse",
+  "ssid": "MyNetwork",
+  "provisioned": true,
+  "password_set": true,
   "uptime": 3600,
   "rssi": -65,
   "chip_temp": 42.5,
@@ -253,6 +261,10 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 }
 ```
 
+- `device_name` — `System::getActiveDeviceName()`, MAC-basierter Default falls kein eigener Name gesetzt
+- `ssid` — aktuell verbundenes WLAN (`WiFi.SSID()`), leer im AP-Modus
+- `provisioned` — Spiegel von NVS `Wifi/provisioned`
+- `password_set` — Spiegel des Rückgabewerts von `System::getActiveHa1()` (`true` = eigenes Passwort aktiv, `false` = noch `initialPW`)
 - `free_heap` / `min_free_heap` — aktueller bzw. niedrigster je erreichter freier Heap (Low-Watermark = Leak-Indikator)
 - `wake_count` — abgeschlossene Light-Sleep/Wake-Zyklen; macht den Sleep über WiFi prüfbar (steigt im Betrieb, stagniert während eines Reconnects)
 - `version` — `FIRMWARE_VERSION`
@@ -279,7 +291,7 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 - `System/ha1` vorhanden → Gerät nutzt das selbst gewählte Passwort für beides.
 - Kein Sondermechanismus, kein Flag, das den Zustand über einen Factory Reset hinweg festhält — reine Existenzprüfung genügt (`System::getActiveHa1()`/`getActivePassword()`, `bool`-Rückgabe zeigt, welcher Fall gerade vorliegt).
 - Pflicht-Ersteinrichtung serverseitig erzwungen: `POST /provision/finish` verweigert den Abschluss, solange `System::getActiveHa1()` noch `false` liefert (noch kein eigenes Passwort) — sonst würden viele Selbstbauer das öffentliche Default nie ändern.
-- Neues Passwort muss mindestens 8 Zeichen haben (WPA2-PSK-Minimum, weil das Device-Passwort auch das AP-Passwort ist) — serverseitig in `POST /provision/password` geprüft, nicht nur clientseitig in der GUI.
+- Neues Passwort muss zwischen 8 und 63 Zeichen haben (WPA2-PSK-Minimum/-Maximum, weil das Device-Passwort auch das AP-Passwort ist) — serverseitig in `POST /provision/password` geprüft, nicht nur clientseitig in der GUI.
 
 **Selbstbauer vs. Fertigprodukt-Kunden**: kein Unterschied mehr im Mechanismus, weil das Initial-Passwort ohnehin öffentlich ist. Ein Selbstbauer, der ein anderes Default-Passwort will, ändert einfach `initialPW.h` vor dem Kompilieren — kein separater Vertriebsweg oder Config-Mechanismus nötig.
 
@@ -357,6 +369,12 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 - `read(float& value)` — **public, non-virtual** — einziger Einstiegspunkt; ruft intern `isValid()` und `readRaw()` auf
 - `isValid()` — **private pure virtual** — prüft ob Sensor antwortet
 - `readRaw(float& buffer)` — **private pure virtual** — schreibt Rohwert in Buffer
+- `getCalibrationJson(char* buffer, size_t len)` — **public pure virtual** — Kalibrierschritte als JSON-Array (`instruction`/`key`/optional `ref`+`unit`), für `GET /calibrationinfo`
+- `getCalibrationValuesJson(char* buffer, size_t len)` — **public pure virtual** — aktuell aktive Kalibrierwerte als JSON-Objekt (Read-back, siehe `GET /calibrationinfo`); Sensoren ohne Kalibrierung liefern `{}`, weiterhin `true`
+- `getPrecision()` — **public pure virtual** — Nachkommastellen für die Formatierung in `GET /sensors`
+- `getUnit()` — **public pure virtual** — Einheit als compile-time-konstanter String (`"g"`, `"°C"`, `"%"`), nie `nullptr`
+- `calibrate(const JsonObjectConst data)` — **public pure virtual** — setzt Kalibrierungsparameter, `true` auch bei Sensoren ohne Kalibrierung
+- `reset()` — **public pure virtual**, `void` — setzt Kalibrierung auf Ausgangszustand zurück (z. B. `scale=1, offset=0`)
 - Kein `id()` — der Array-Index im SensorManager ist die ID (`sensor:0` = Index 0). Gilt für die **öffentliche Schnittstelle**: kein Getter, kein Weg für andere Module, einen Sensor nach seiner Position zu fragen. Eine konkrete Unterklasse darf ihren Index trotzdem **privat** halten, wenn sie ihn für einen eigenen, internen Zweck braucht (Beispiel: `HX711Sensor::_pId` für den eigenen NVS-Namespace, siehe unten) — solange er nie über einen Getter nach außen dringt und nie als allgemeines Identitätsmerkmal dient. Bewusst **nicht** in `SensorBase` zentralisiert, obwohl ein künftiger zweiter kalibrierbarer Sensortyp vermutlich dasselbe braucht: verfrühte Abstraktion für einen Fall, den's noch nicht gibt. Erst hochziehen, wenn ein zweites echtes Beispiel existiert.
 - Virtueller Destruktor: `virtual ~SensorBase() = default`
 
@@ -368,8 +386,10 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 - `constexpr uint8_t MAX_SENSORS = 8`
 - `void initSensors()` — Hardware-Init, kein Rückgabewert (Validierung erfolgt beim Lesen)
 - `bool getSensorDataJson(char* buf, size_t len)` — baut JSON on-demand, gibt false bei Fehler
-- Konkrete Sensoren werden per `#ifdef SENSOR_HX711` etc. aktiviert
-- Internes Array `SensorBase* _sensors[MAX_SENSORS]`
+- `bool getCalibrationInfoJson(char* buf, size_t len)` — baut das JSON-Array für `GET /calibrationinfo` aus `getCalibrationJson()`/`getCalibrationValuesJson()`/`getUnit()` aller Sensoren
+- `bool calibrateSensor(uint8_t idx, JsonObjectConst data)` / `bool resetSensor(uint8_t idx)` — reichen an den Sensor mit Index `idx` durch, `false` bei ungültigem Index
+- Konkrete Sensoren werden in `initSensors()` unconditional instanziiert (HX711 + 2× DHT22) — keine `#ifdef`-Sensorauswahl, siehe PlatformIO-Struktur weiter unten
+- Internes Array `SensorEntry sensorArray[MAX_SENSORS]` (anonymer Namespace) — `SensorEntry` bündelt `SensorBase* sensor` mit dem Typ-String (`type`, für `GET /calibrationinfo`)
 
 ### HX711Sensor
 `include/HX711Sensor.h` / `src/HX711Sensor.cpp`
@@ -402,7 +422,9 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 `include/System.h` / `src/System.cpp` — Namespace, keine Klasse.
 
 - Einziger Besitzer des NVS-Namespace `System` (Gerätename, Device-Passwort + -Hash).
+- `constexpr size_t DEVICE_NAME_LEN = 32` — zentrale Puffergröße für den Gerätenamen, analog zu `DigestCrypto::SHA256_HEX_LEN`.
 - `loadDeviceName(buf, len)` / `storeDeviceName(name)` — rein kosmetisch, nie Teil der Digest-Auth-Realm oder des Usernamens.
+- `getActiveDeviceName(buf, len)` — **einziger öffentlicher Lese-Weg** mit Fallback: eigener Name falls in NVS gesetzt, sonst MAC-basierter Default. `bool`-Rückgabe wie bei `getActiveHa1()`/`getActivePassword()` (`true` = eigener Name aktiv). Aktuell einziger Aufrufer: `device_name` in `GET /status`. Die AP-SSID bleibt bewusst direkt MAC-basiert (nicht über diese Funktion), unabhängig vom user-gesetzten Namen — siehe WiFiManager-Abschnitt.
 - `provideDeviceDefaultPassword(buf, len)` — Klartext-Default aus `initialPW.h`, nie in NVS gespeichert.
 - `loadDevicePassword(buf, len)` / `storeDevicePassword(pw)` — eigenes Passwort im Klartext (für `WiFi.softAP()`, da Digest Auth nur den Hash liefert).
 - `storeDeviceHa1(ha1)` — Hash-Setter, öffentlich.
@@ -427,8 +449,8 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 - `handle()` — in `loop()` aufrufen; nimmt eingehende Verbindung an, liest Header bis `\r\n\r\n` (mit 1,5s-Inaktivitäts-Timeout `REQUEST_READ_TIMEOUT_MS` gegen abgerissene/halb-offene Verbindungen). **Digest-Auth-Gate greift für jede Route, ausnahmslos** — auch `GET /` und AP-Modus, kein Sonderfall mehr für den unprovisionierten Zustand. Holt sich `ha1` über `System::getActiveHa1()`, reicht es an `DigestAuth::verify()` durch; bei Erfolg Routing zum Handler, sonst 401. **Gibt `bool` zurück** (true = Client bedient) — das Sleep-Wach-Fenster in `loop()` bleibt damit wach, solange Requests kommen.
 - Request-Buffer: 1024 Bytes (`BUFFER_SIZE`), Body-Puffer für JSON-Endpoints: 256 Bytes (`BODY_SIZE`)
 - POST `/calibrate`, `/provision/wifi`, `/provision/password`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
-- `POST /provision/password` prüft serverseitig eine Mindestlänge von 8 Zeichen (`MIN_PASSWORD_LEN`, WPA2-PSK-Minimum) — nicht nur clientseitig in der GUI, da der Endpoint auch direkt per REST erreichbar ist
-- Debug-Logging (`[INFO]`/`[WARN]`) pro Request: Methode+Pfad+Ha1-Quelle (`own`/`default`), Auth-Ergebnis, geblockte Finish-Versuche, erfolgreiche Passwort-Updates
+- `POST /provision/password` prüft serverseitig eine Mindest-/Maximallänge von 8/63 Zeichen (`MIN_PASSWORD_LEN`/`MAX_PASSWORD_LEN`, WPA2-PSK-Minimum/-Maximum) — nicht nur clientseitig in der GUI, da der Endpoint auch direkt per REST erreichbar ist
+- Debug-Logging (`[INFO]`/`[WARN]`) nur im `DISABLE_LIGHT_SLEEP`-Build (Laufzeit-Logs sind im Sleep-Build ohnehin nicht zuverlässig sichtbar): Methode+Pfad+Ha1-Quelle (`own`/`default`), Auth-Fehlschläge, geblockte Finish-Versuche, erfolgreiche Passwort-/Name-Updates
 
 ### PlatformIO-Struktur
 ```ini

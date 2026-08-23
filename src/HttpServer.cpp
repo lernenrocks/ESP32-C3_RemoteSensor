@@ -15,6 +15,12 @@ constexpr uint BODY_SIZE = 256;
 // WPA2-PSK requires at least 8 characters -- the device password also
 // serves as the AP password, so it must respect this limit.
 constexpr size_t MIN_PASSWORD_LEN = 8;
+// WPA2-PSK's own real maximum (63 chars) — also keeps password well clear of
+// the point where DigestCrypto::computeHa1()'s internal buffer would start
+// silently truncating it (~92 chars), which would otherwise make the HA1
+// (and thus the effective password) shorter than the user thinks it is,
+// with no error anywhere.
+constexpr size_t MAX_PASSWORD_LEN = 63;
 // Inactivity timeout while reading the header: aborts if no (further) data
 // arrives after connecting. Protects against half-open/dropped connections
 // where client.connected() stays stuck (no RST).
@@ -241,25 +247,29 @@ namespace HttpServer
         }
 
         uint8_t sensorIdx = 0;
-        if (strstr(requestHeader, "GET / "))
+        // Exact matches against the already-parsed method/path (not strstr on
+        // the raw header) -- a prefix match would let e.g. "GET /statusXYZ"
+        // hit the /status handler too. sscanf-based routes below are exact
+        // by construction (%hhu only matches a path that's actually numeric).
+        if (strcmp(method, "GET") == 0 && strcmp(path, "/") == 0)
         {
             // Page lives in flash (const char[]) -> stream directly, no heap.
             client.printf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: %u\r\n\r\n", strlen(PROVISIONING_HTML));
             client.print(PROVISIONING_HTML);
         }
-        else if (strstr(requestHeader, "GET /sensors") != 0)
+        else if (strcmp(method, "GET") == 0 && strcmp(path, "/sensors") == 0)
         {
             printSensorInfo(client);
         }
-        else if (strstr(requestHeader, "GET /status") != 0)
+        else if (strcmp(method, "GET") == 0 && strcmp(path, "/status") == 0)
         {
             printStatus(client);
         }
-        else if (strstr(requestHeader, "GET /calibrationinfo") != 0)
+        else if (strcmp(method, "GET") == 0 && strcmp(path, "/calibrationinfo") == 0)
         {
             printCalibrationInfo(client);
         }
-        else if (strstr(requestHeader, "POST /provision/wifi ") != 0)
+        else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/wifi") == 0)
         {
             StaticJsonDocument<BODY_SIZE> doc;
             DeserializationError err = deserializeJson(doc, client);
@@ -309,7 +319,7 @@ namespace HttpServer
             else
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         }
-        else if (strstr(requestHeader, "POST /factoryreset") != 0)
+        else if (strcmp(method, "POST") == 0 && strcmp(path, "/factoryreset") == 0)
         {
             InternalStorage::erase();
             client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
@@ -320,7 +330,7 @@ namespace HttpServer
 #endif
             ESP.restart();
         }
-        else if (strstr(requestHeader, "POST /provision/finish"))
+        else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/finish") == 0)
         {
             char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
             if (!System::getActiveHa1(ha1, sizeof(ha1)))
@@ -344,7 +354,7 @@ namespace HttpServer
 #endif
             ESP.restart();
         }
-        else if (strstr(requestHeader, "POST /provision/wifi/reset") != 0)
+        else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/wifi/reset") == 0)
         {
             {
                 InternalStorage::Session session("Wifi", false);
@@ -358,12 +368,12 @@ namespace HttpServer
 #endif
             ESP.restart();
         }
-        else if (strstr(requestHeader, "POST /provision/password") != 0)
+        else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/password") == 0)
         {
             StaticJsonDocument<BODY_SIZE> doc;
             DeserializationError err = deserializeJson(doc, client);
             const char *pw = doc["password"];
-            if (err || doc["password"].isNull() || strlen(pw) < MIN_PASSWORD_LEN)
+            if (err || doc["password"].isNull() || strlen(pw) < MIN_PASSWORD_LEN || strlen(pw) > MAX_PASSWORD_LEN)
             {
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
             }
@@ -379,12 +389,14 @@ namespace HttpServer
                 client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             }
         }
-        else if (strstr(requestHeader, "POST /provision/name") != 0)
+        else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/name") == 0)
         {
             StaticJsonDocument<BODY_SIZE> doc;
             DeserializationError err = deserializeJson(doc, client);
             const char *name = doc["name"];
-            if (err || doc["name"].isNull() || strlen(name) == 0)
+            // >= (not >) because DEVICE_NAME_LEN includes the '\0' -- a name
+            // that exactly fills the buffer would leave no room for it.
+            if (err || doc["name"].isNull() || strlen(name) == 0 || strlen(name) >= System::DEVICE_NAME_LEN)
             {
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
             }

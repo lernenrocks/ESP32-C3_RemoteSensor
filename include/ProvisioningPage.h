@@ -80,9 +80,9 @@ button:disabled{opacity:.5;cursor:default}
       <button class="primary" id="finishBtn" onclick="finish()" style="display:none">Finish &amp; Reboot</button>
       <div id="finMsg" class="msg"></div>
     </div>
-    <label>Device name</label>
+    <label>Device name (max. 31 characters)</label>
     <div class="unitrow">
-      <input id="devname" autocomplete="off">
+      <input id="devname" autocomplete="off" maxlength="31">
       <button class="primary" onclick="saveDeviceName()">Save</button>
     </div>
     <div id="nameMsg" class="msg"></div>
@@ -92,7 +92,7 @@ button:disabled{opacity:.5;cursor:default}
 
   <div id="p1" class="panel">
     <p class="muted">Set a device password — required before setup can be finished. Also used as the AP's WiFi password.</p>
-    <label>New password (min. 8 characters)</label>
+    <label>New password (8-63 characters)</label>
     <input id="newpw" type="password" autocomplete="new-password">
     <label>Confirm password</label>
     <input id="newpw2" type="password" autocomplete="new-password">
@@ -203,7 +203,7 @@ async function saveDeviceName(){
 async function savePassword(){
   var pw=document.getElementById('newpw').value,pw2=document.getElementById('newpw2').value;
   var m=document.getElementById('pwMsg');
-  if(!pw||pw.length<8){msg(m,'At least 8 characters required',false);return;}
+  if(!pw||pw.length<8||pw.length>63){msg(m,'Must be 8-63 characters',false);return;}
   if(pw!==pw2){msg(m,'Passwords do not match',false);return;}
   try{
     var r=await fetch('/provision/password',{method:'POST',body:JSON.stringify({password:pw})});
