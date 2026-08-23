@@ -6,6 +6,7 @@
 #include "DigestAuth.h"
 #include "DigestCrypto.h"
 #include "System.h"
+#include "JsonEscape.h"
 
 extern const char FIRMWARE_VERSION[];
 extern uint32_t wakeCount;
@@ -64,45 +65,6 @@ namespace
         return connected;
     }
 
-    // First place in the code where user-entered free text (device name)
-    // gets embedded into hand-built JSON — escaping is mandatory per
-    // CLAUDE.md (\", \\, \n, \r, \t, \uXXXX), otherwise a name could break
-    // the response JSON.
-    void escapeJsonString(const char *in, char *out, size_t outLen)
-    {
-        size_t o = 0;
-        for (size_t i = 0; in[i] != '\0' && o + 1 < outLen; i++)
-        {
-            unsigned char c = (unsigned char)in[i];
-            const char *rep = nullptr;
-            switch (c)
-            {
-                case '"': rep = "\\\""; break;
-                case '\\': rep = "\\\\"; break;
-                case '\n': rep = "\\n"; break;
-                case '\r': rep = "\\r"; break;
-                case '\t': rep = "\\t"; break;
-            }
-            if (rep)
-            {
-                size_t rl = strlen(rep);
-                if (o + rl >= outLen) break;
-                memcpy(out + o, rep, rl);
-                o += rl;
-            }
-            else if (c < 0x20)
-            {
-                if (o + 6 >= outLen) break;
-                o += snprintf(out + o, outLen - o, "\\u%04x", c);
-            }
-            else
-            {
-                out[o++] = (char)c;
-            }
-        }
-        out[o] = '\0';
-    }
-
     void printSensorInfo(WiFiClient &client)
     {
         char buffer[BUFFER_SIZE] = {};
@@ -118,11 +80,11 @@ namespace
         char name[System::DEVICE_NAME_LEN] = {};
         System::getActiveDeviceName(name, sizeof(name));
         char nameEscaped[System::DEVICE_NAME_LEN * 6] = {};
-        escapeJsonString(name, nameEscaped, sizeof(nameEscaped));
+        JsonEscape::escape(name, nameEscaped, sizeof(nameEscaped));
         char ssid[33] = {};
         WiFi.SSID().toCharArray(ssid, sizeof(ssid));
         char ssidEscaped[33 * 6] = {};
-        escapeJsonString(ssid, ssidEscaped, sizeof(ssidEscaped));
+        JsonEscape::escape(ssid, ssidEscaped, sizeof(ssidEscaped));
         bool provisioned = false;
         {
             InternalStorage::Session session("Wifi", true);

@@ -410,12 +410,19 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 - `computeHa1(const char *password, char *out, size_t outLen)` — `HA1 = SHA256("admin:<realm>:<password>")`, Username `admin` fest verdrahtet, privat im anonymen Namespace (kein Setter, kein User-änderbarer Wert).
 - Öffentliche `constexpr size_t SHA256_HEX_LEN=64, NONCE_HEX_LEN=16, REALM_BUF_LEN=32` — bewusst hier zentral und öffentlich statt privat pro Modul dupliziert: andere Module brauchen sie zum Dimensionieren eigener Stack-Puffer (`char buf[SHA256_HEX_LEN+1]`), das braucht einen compile-time-Wert — ein Getter könnte das nicht liefern, Array-Größen sind keine Laufzeitwerte.
 
+### DigestHeaderParser
+`include/DigestHeaderParser.h` / `src/DigestHeaderParser.cpp` — Namespace, keine Klasse.
+
+- `extractValue(const char *line, const char *key, char *dest, size_t destSize)` — liest ein Feld aus einer Digest-Authorization-Header-Zeile (z. B. `nonce`). Versucht zuerst `key="value"` (RFC 7616 quotet die meisten Felder), dann unquoted `key=value` (für `nc`/`algorithm`). `false` + leeres `dest`, wenn nicht gefunden.
+- **Wortgrenzen-Prüfung beim Suchen** (`findFieldStart()`, privat): ein Treffer wird nur akzeptiert, wenn das Zeichen davor nicht alphanumerisch ist. Grund: `"cnonce="` enthält `"nonce="` als exakte Teilzeichenkette — ein simples `strstr` nach `nonce=` würde bei einem Header, der `cnonce` vor `nonce` listet (RFC 7616 schreibt keine Feldreihenfolge vor), den `cnonce`-Wert statt des echten `nonce`-Werts liefern. Über einen Unit-Test (`test/test_digest_header_parser/`) gefunden und gefixt.
+- Eigenständiges Modul, **keine** mbedtls-/WiFi-/NVS-Abhängigkeit — bewusst aus `DigestAuth` herausgezogen, weil es der einzige Teil der Auth-Kette ist, der komplett hardwarefrei testbar ist (reine String-Logik). Siehe `## Tests` weiter unten.
+
 ### DigestAuth
 `include/DigestAuth.h` / `src/DigestAuth.cpp` — Namespace, keine Klasse.
 
 - Reine Verifikationslogik, zustandslos — kennt weder NVS noch `System`.
 - `buildWwwAuthenticate(char *out, size_t len)` — baut den `WWW-Authenticate`-Header für die 401-Challenge (Realm + Nonce via `DigestCrypto`).
-- `verify(const char *authHeader, const char *method, const char *path, const char *ha1)` — prüft die Digest-Response gegen das übergebene `ha1`. Kein eigener NVS-Zugriff — der Aufrufer (`HttpServer`) holt `ha1` vorher selbst über `System::getActiveHa1()` und reicht es durch.
+- `verify(const char *authHeader, const char *method, const char *path, const char *ha1)` — prüft die Digest-Response gegen das übergebene `ha1`. Kein eigener NVS-Zugriff — der Aufrufer (`HttpServer`) holt `ha1` vorher selbst über `System::getActiveHa1()` und reicht es durch. Feld-Extraktion aus dem Authorization-Header läuft über `DigestHeaderParser::extractValue()`.
 - **`path` ist der tatsächliche Request-Pfad, nicht das `uri=`-Feld aus dem Authorization-Header** — matcht die Shelly-Gen2/3-Server-Konvention, gegen die der MainUnit-Client gebaut ist.
 
 ### System
@@ -451,6 +458,14 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 - POST `/calibrate`, `/provision/wifi`, `/provision/password`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
 - `POST /provision/password` prüft serverseitig eine Mindest-/Maximallänge von 8/63 Zeichen (`MIN_PASSWORD_LEN`/`MAX_PASSWORD_LEN`, WPA2-PSK-Minimum/-Maximum) — nicht nur clientseitig in der GUI, da der Endpoint auch direkt per REST erreichbar ist
 - Debug-Logging (`[INFO]`/`[WARN]`) nur im `DISABLE_LIGHT_SLEEP`-Build (Laufzeit-Logs sind im Sleep-Build ohnehin nicht zuverlässig sichtbar): Methode+Pfad+Ha1-Quelle (`own`/`default`), Auth-Fehlschläge, geblockte Finish-Versuche, erfolgreiche Passwort-/Name-Updates
+- Routing per exaktem `strcmp(method, ...) && strcmp(path, ...)` gegen die schon geparsten `method`/`path`-Puffer (nicht `strstr` auf dem Rohheader) — ein Präfix-Match hätte z. B. `GET /statusXYZ` auf den `/status`-Handler treffen lassen.
+
+### JsonEscape
+`include/JsonEscape.h` / `src/JsonEscape.cpp` — Namespace, keine Klasse.
+
+- `escape(const char *in, char *out, size_t outLen)` — escaped einen String fürs Einbetten in handgebautes JSON (`\"`, `\\`, `\n`, `\r`, `\t`, sonstige Steuerzeichen als `\uXXXX`), siehe `Nicht verhandelbare Regeln → JSON` oben. Bei zu kleinem Puffer wird sauber gekürzt — nie mitten in einer Escape-Sequenz.
+- Eigenständiges Modul, keine Abhängigkeit — aus `HttpServer.cpp` herausgezogen (dort ursprünglich als lokale Funktion für `device_name`/`ssid` in `GET /status`), weil reine Pufferlogik ohne Hardwarebezug komplett hardwarefrei testbar ist. Siehe `## Tests` weiter unten.
+- Genutzt von `HttpServer::printStatus()` für `device_name` und `ssid` — beides potenziell user-kontrollierter Freitext, der in die Response-JSON eingebettet wird.
 
 ### PlatformIO-Struktur
 ```ini
@@ -469,6 +484,19 @@ Keine Build-Flags für Sensortypen — der SensorManager kennt die Hardware dire
 - **Waage**: 1x HX711 → `sensor:0`
 - **Terrariumbox**: 2–3x DHT22 (je Temp + Humidity = 2 Einträge) + Bodenfeuchte → bis zu 7 Einträge
 - **Chiptemperatur**: ESP32-C3 interner Sensor → `GET /status` (`chip_temp`), nicht in `/sensors`
+
+---
+
+## Tests
+
+**Zwei-Klassen-Ansatz**, entlang der tatsächlichen Testbarkeit ohne Hardware:
+
+1. **Hostnative Unit-Tests** (`pio test -e native`) — für Module ohne Arduino-/ESP-IDF-/mbedtls-Abhängigkeit. Läuft komplett auf dem Entwicklungsrechner, kein Board, keine Flash-Zeit. Aktuell abgedeckt: `JsonEscape` (`test/test_json_escape/`), `DigestHeaderParser` (`test/test_digest_header_parser/`).
+2. **Alles Hardware-Gekoppelte** (WiFi, NVS, HX711/DHT22, `DigestCrypto::sha256Hex`/`computeHa1`/`buildRealm` via mbedtls+`WiFi.macAddress()`, `DigestAuth::verify()` als Ganzes) — bewusst **nicht** automatisiert, sondern manuell/über den laufenden Betrieb geprüft. Begründung: Auth läuft bei jedem Request mit, ein produktiver Dauerbetrieb deckt `verify()`/`sha256Hex` also faktisch mit ab, ohne dass ein eigenes Test-Rig nötig wäre — bei diesem Projektumfang lohnt sich kein Hardware-in-the-Loop-Test-Setup.
+
+`[env:native]` in `platformio.ini` filtert `src/` per `build_src_filter` auf die getesteten Module herunter (`test_build_src = yes` nötig, sonst wird `src/` beim Testbuild gar nicht erst mitkompiliert) — der Rest der Firmware (alles mit `<WiFi.h>`/`<Preferences.h>`/mbedtls) würde nativ ohnehin nicht kompilieren. Ein Modul kommt erst in den Filter, wenn es nachweislich abhängigkeitsfrei ist.
+
+**Warum `DigestHeaderParser` ein eigenes Modul ist statt `private` in `DigestAuth`**: Es ist der einzige Teil der Auth-Kette ohne Krypto-Abhängigkeit (reines String-Parsing) — und zugleich der bug-anfälligste handgeschriebene Teil. Der Unit-Test hat das direkt bestätigt: `extractValue()` matchte `nonce=` versehentlich innerhalb von `cnonce=...` (Teilzeichenkette), bevor die Wortgrenzen-Prüfung (`findFieldStart()`) das behoben hat — ein Fund, den die reine Hardware-Verifikation vorher nicht aufgedeckt hatte, weil deren Feldreihenfolge den Bug zufällig nicht auslöste. Siehe `DigestHeaderParser`-Abschnitt oben.
 
 ---
 

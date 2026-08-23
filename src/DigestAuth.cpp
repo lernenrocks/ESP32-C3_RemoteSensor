@@ -1,56 +1,15 @@
 #include "DigestAuth.h"
 #include <Arduino.h>
 #include "DigestCrypto.h"
+#include "DigestHeaderParser.h"
 
 namespace {
-    constexpr size_t KEY_BUF_LEN = 24;
-
     constexpr size_t NC_BUF_LEN = 16;
     constexpr size_t CNONCE_BUF_LEN = 16;
     constexpr size_t RESPONSE_INPUT_BUF_LEN = 192;
 
     // +1 each for the ':' separator and the '\0' terminator.
     constexpr size_t HA2_INPUT_BUF_LEN = DigestAuth::MAX_METHOD_LEN + 1 + DigestAuth::MAX_URI_LEN + 1;
-
-    // Tries key="value" first, then falls back to unquoted key=value: RFC
-    // 7616 quotes most Digest fields (realm, nonce, response, uri, cnonce,
-    // opaque) but leaves a few unquoted (algorithm, nc), and this helper is
-    // used for both kinds, so both forms have to be handled generically.
-    // @warning '\0' not included
-    bool extractValue(const char *line, const char *key, char *dest, size_t destSize)
-    {
-        char keyQ[KEY_BUF_LEN];
-        snprintf(keyQ, sizeof(keyQ), "%s=\"", key);
-        const char *start = strstr(line, keyQ);
-        if (start)
-        {
-            start += strlen(keyQ);
-            const char *end = strchr(start, '"');
-            if (end)
-            {
-                size_t length = (size_t)(end - start);
-                if (length >= destSize) length = destSize - 1;
-                memcpy(dest, start, length);
-                dest[length] = '\0';
-                return true;
-            }
-        }
-        char keyP[KEY_BUF_LEN];
-        snprintf(keyP, sizeof(keyP), "%s=", key);
-        start = strstr(line, keyP);
-        if (start)
-        {
-            start += strlen(keyP);
-            const char *end = strpbrk(start, ", \r\n");
-            size_t length = end ? (size_t)(end - start) : strlen(start);
-            if (length >= destSize) length = destSize - 1;
-            memcpy(dest, start, length);
-            dest[length] = '\0';
-            return true;
-        }
-        dest[0] = '\0';
-        return false;
-    }
 }
 namespace DigestAuth {
 
@@ -71,10 +30,10 @@ namespace DigestAuth {
         char cnonce[CNONCE_BUF_LEN+1] ={};
         char response[DigestCrypto::SHA256_HEX_LEN+1]={};
 
-        if (!extractValue(authHeader, "nonce",    nonce,    sizeof(nonce))    ||
-            !extractValue(authHeader, "nc",       nc,       sizeof(nc))       ||
-            !extractValue(authHeader, "cnonce",   cnonce,   sizeof(cnonce))   ||
-            !extractValue(authHeader, "response", response, sizeof(response)))
+        if (!DigestHeaderParser::extractValue(authHeader, "nonce",    nonce,    sizeof(nonce))    ||
+            !DigestHeaderParser::extractValue(authHeader, "nc",       nc,       sizeof(nc))       ||
+            !DigestHeaderParser::extractValue(authHeader, "cnonce",   cnonce,   sizeof(cnonce))   ||
+            !DigestHeaderParser::extractValue(authHeader, "response", response, sizeof(response)))
         {
             return false;
         }
