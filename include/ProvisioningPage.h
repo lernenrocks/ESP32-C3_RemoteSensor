@@ -305,7 +305,8 @@ async function capture(idx,key,btn){
   var cap=document.getElementById('cap_'+idx+'_'+key);
   btn.disabled=true;cap.textContent=' …';
   try{
-    await fetch('/reset/'+idx,{method:'POST'});      // guarantee raw ADC
+    var resetR=await fetch('/reset/'+idx,{method:'POST'});      // guarantee raw ADC
+    if(!resetR.ok) throw new Error('reset failed');
     var d=await (await fetch('/sensors')).json();
     var v=d['sensor:'+idx].value;
     collected[idx][key]=v;

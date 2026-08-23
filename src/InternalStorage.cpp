@@ -49,6 +49,12 @@ namespace InternalStorage
     }
     bool readString(const char *key, char *value, size_t len){
         if(!preferences.isKey(key)){
+            // Guarantee a valid, empty string on every path instead of relying
+            // on the caller having zero-initialized `value` beforehand — the
+            // "existence check via first byte" convention used throughout
+            // this project (see CLAUDE.md) then holds even if a future
+            // caller forgets to pre-zero its buffer.
+            if(len > 0) value[0] = '\0';
             return false;
         }
         preferences.getString(key,value,len);

@@ -240,7 +240,7 @@ namespace HttpServer
             return true;
         }
 
-        uint8_t sensorIdx;
+        uint8_t sensorIdx = 0;
         if (strstr(requestHeader, "GET / "))
         {
             // Page lives in flash (const char[]) -> stream directly, no heap.
