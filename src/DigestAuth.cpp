@@ -1,9 +1,5 @@
 #include "DigestAuth.h"
 #include <Arduino.h>
-#include <WiFi.h>
-#include <mbedtls/sha256.h>
-#include "InternalStorage.h"
-#include <esp_random.h>
 #include "DigestCrypto.h"
 
 namespace {

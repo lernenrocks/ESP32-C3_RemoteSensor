@@ -3,9 +3,7 @@
 #include "WiFiManager.h"
 #include "HttpServer.h"
 #include "InternalStorage.h"
-#include "esp_wifi.h"
 #include "esp_sleep.h"
-#include "DigestAuth.h"
 
 extern const char FIRMWARE_VERSION[] = "0.1.0";
 constexpr unsigned long FACTORY_RESET_TRESHOLD = 5000UL;

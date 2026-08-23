@@ -5,13 +5,17 @@
 // memory-mapped Flash des ESP32 -> client.print() streamt es direkt, kein
 // Heap, kein String.
 //
-// Fuenf Tabs, immer alle sichtbar (kein Modus-abhaengiges Ein-/Ausblenden,
-// haelt die JS-Logik einfach): Status | Password | WiFi | Sensors | Finish.
+// Vier Tabs, immer alle sichtbar (kein Modus-abhaengiges Ein-/Ausblenden,
+// haelt die JS-Logik einfach): Status | Password | WiFi | Sensors.
 // Status ist die neue Startseite und funktioniert eigenstaendig auch im
-// laufenden Betrieb (STA, provisioned=true) — Live-Werte + aktuelle
-// Kalibrierwerte, kein abgeschlossenes Onboarding noetig. "Finish" im
-// laufenden Betrieb anzuklicken ist harmlos (setzt provisioned=true erneut,
-// rebootet einfach in denselben Zustand).
+// laufenden Betrieb (STA, provisioned=true) — Geraetename + System-Info,
+// kein abgeschlossenes Onboarding noetig. Live-Sensorwerte + aktuelle
+// Kalibrierwerte stehen bewusst nur noch im Sensors-Tab (kein Dashboard
+// hier, das macht spaeter die Companion App). Kein eigener Finish-Tab mehr
+// — stattdessen ein Banner im Status-Tab, der nur erscheint, solange
+// provisioned=false ist ("Finish & Reboot" im laufenden Betrieb erneut
+// anzuklicken waere ohnehin harmlos, aber der Banner ist dann gar nicht
+// mehr sichtbar).
 //
 // Datengetrieben: Das JS baut Sensor-Uebersicht und -Tabs aus GET
 // /calibrationinfo auf, damit hier kein Sensor-Wissen hartcodiert ist
@@ -331,7 +335,6 @@ async function calibrate(idx){
   }catch(e){msg(m,'Connection failed',false);}
   refreshLiveValues();
 }
-
 
 async function finish(){
   var m=document.getElementById('finMsg');
