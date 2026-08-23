@@ -8,14 +8,14 @@
 extern const char FIRMWARE_VERSION[] = "0.1.0";
 constexpr unsigned long FACTORY_RESET_TRESHOLD = 5000UL;
 
-// Zaehlt abgeschlossene Light-Sleep/Wake-Zyklen. Wird in GET /status
-// ausgegeben — macht den Sleep ueber WiFi pruefbar (die USB-Konsole stirbt
-// im Sleep, daher kein Serial-Weg). HttpServer liest es via extern.
+// Counts completed Light Sleep/wake cycles. Output in GET /status — makes
+// sleep verifiable over WiFi (the USB console dies during sleep, so no
+// Serial path). HttpServer reads it via extern.
 uint32_t wakeCount = 0;
 
-// Wach-Fenster nach einem WiFi-Wakeup: so lange auf eingehende Requests
-// warten, bevor wieder geschlafen wird. Deckt den TCP-Handshake ab, der
-// nach dem Aufwachen noch laeuft.
+// Wake window after a WiFi wakeup: how long to wait for incoming requests
+// before sleeping again. Covers the TCP handshake that's still running
+// after waking up.
 constexpr unsigned long HTTP_GRACE_MS = 200UL;
 
 void checkFactoryReset()
@@ -39,13 +39,18 @@ void checkFactoryReset()
     }
     else
     {
+#ifdef DISABLE_LIGHT_SLEEP
       Serial.println("[WARN] Factory Reset triggered via GPIO9, erasing NVS...");
+#endif
       InternalStorage::erase();
       ESP.restart();
     }
   }
   if (pressed)
   {
+    // Two blink rates as feedback for how much longer to hold: slow (500ms)
+    // while still counting down, fast (200ms) once the threshold is reached
+    // — fast blinking signals "release now to trigger the reset".
     unsigned long pressingTime = millis() - pressedStarted;
     static unsigned long lastBlink = millis();
     if (pressingTime < FACTORY_RESET_TRESHOLD)
@@ -76,9 +81,9 @@ void setup()
   digitalWrite(PIN_INTERNAL_LED, HIGH);
   SensorManager::initSensors();
 
-  // Wakeup-Quellen: eingehende TCP-Anfrage (WiFi, braucht WIFI_PS_MIN_MODEM,
-  // gesetzt in WiFiManager) und die Factory-Reset-Taste (GPIO9). Kein Timer,
-  // kein UART — der C3 schlaeft, bis ein Request oder die Taste ihn weckt.
+  // Wakeup sources: incoming TCP request (WiFi, needs WIFI_PS_MIN_MODEM, set
+  // in WiFiManager) and the factory reset button (GPIO9). No timer, no
+  // UART — the C3 sleeps until a request or the button wakes it.
   gpio_wakeup_enable((gpio_num_t)PIN_FACTORY_RESET, GPIO_INTR_LOW_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   esp_sleep_enable_wifi_wakeup();
@@ -89,50 +94,50 @@ void loop()
   checkFactoryReset();
 
 #ifdef DISABLE_LIGHT_SLEEP
-  WiFiManager::heartbeat(); // debug-only Zustandsausgabe; im Sleep-Build still
+  WiFiManager::heartbeat(); // debug-only status output; silent in the sleep build
 #endif
 
   if (!WiFiManager::isConnected())
   {
-    // AP-/Provisioning-Modus oder STA-Reconnect: kein Sleep, Requests aber
-    // weiter bedienen (erste Config laeuft ueber den SoftAP).
+    // AP/provisioning mode or STA reconnect: no sleep, but keep serving
+    // requests (initial config runs over the SoftAP).
     WiFiManager::initWifi();
     HttpServer::handle();
     return;
   }
 
 #ifdef DISABLE_LIGHT_SLEEP
-  // Debug-Build: kein Light Sleep. Der USB-Serial-JTAG-Controller bleibt an,
-  // Konsole und Upload sind durchgehend stabil. Requests normal bedienen.
+  // Debug build: no Light Sleep. The USB-Serial-JTAG controller stays on,
+  // console and upload remain stable throughout. Serve requests normally.
   HttpServer::handle();
   return;
 #else
   Serial.flush();
   esp_err_t err = esp_light_sleep_start();
 
-  // Nur ein erfolgreicher Schlaf zaehlt als Wake-Zyklus (Reject != geschlafen).
+  // Only a successful sleep counts as a wake cycle (reject != slept).
   if (err == ESP_OK)
   {
     ++wakeCount;
-    // Kein Netzwerk-Wakeup -> nichts zu tun, weiter.
+    // No network wakeup -> nothing to do, continue.
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_WIFI)
       return;
   }
 
-  // Sonst gilt: entweder hat uns WiFi geweckt, ODER der Schlafversuch wurde
-  // abgelehnt (ESP_ERR_SLEEP_REJECT == 259 — ein Wakeup-Trigger lag schon an,
-  // meist pending WiFi-RX). Beides heisst: es koennte ein Request anliegen.
-  // Der TCP-Handshake laeuft nach dem Aufwachen noch, ein einzelnes handle()
-  // wuerde ihn verpassen — also ein Wach-Fenster offen halten und bei jedem
-  // bedienten Request neu aufziehen. Das drainiert zugleich die pending
-  // Arbeit, sodass die naechste Iteration sauber einschlaeft.
+  // Otherwise: either WiFi woke us, OR the sleep attempt was rejected
+  // (ESP_ERR_SLEEP_REJECT == 259 — a wakeup trigger was already pending,
+  // usually pending WiFi RX). Either way means a request could be waiting.
+  // The TCP handshake is still running after waking up, a single handle()
+  // call would miss it — so keep a wake window open and reset it on every
+  // serviced request. This also drains the pending work, so the next
+  // iteration falls asleep cleanly.
   unsigned long idleSince = millis();
   while (millis() - idleSince < HTTP_GRACE_MS)
   {
     if (HttpServer::handle())
       idleSince = millis();
     else
-      delay(1); // yield: WiFi-Task atmen lassen, kein Busy-Spin
+      delay(1); // yield: let the WiFi task breathe, no busy-spin
   }
 #endif
 }

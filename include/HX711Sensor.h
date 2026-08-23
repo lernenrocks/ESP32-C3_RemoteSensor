@@ -15,7 +15,13 @@ public:
     void reset() override;
 
 private:
+    static constexpr size_t NVS_NAMESPACE_LEN = 12;
     HX711 _scale;
+    uint8_t _pId;
+    // Builds this instance's own NVS namespace ("sensor_<pId>") on demand.
+    // _pId is stored per instance (not a shared/global buffer), so this
+    // stays correct no matter how many other HX711Sensor instances exist.
+    void nvsNamespace(char *out, size_t len) const;
     bool isValid() override;
     void readRaw(float &buffer) override;
 };

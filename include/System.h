@@ -2,8 +2,8 @@
 #include <Arduino.h>
 namespace System
 {
-    /// Puffergroesse fuer den Geraetenamen — zentral hier statt pro Aufrufer
-    /// dupliziert, analog zu DigestCrypto::SHA256_HEX_LEN.
+    /// Buffer size for the device name — kept centrally here instead of
+    /// duplicated per caller, analogous to DigestCrypto::SHA256_HEX_LEN.
     constexpr size_t DEVICE_NAME_LEN = 32;
 
     /**
@@ -28,9 +28,9 @@ namespace System
      * @param buffer Destination buffer, always filled with a usable name. Size >= DEVICE_NAME_LEN.
      * @param len    Buffer size.
      * @return true if the user's own name is in use, false if still on the MAC-based default.
-     * @note Rein kosmetisch — die AP-SSID bleibt bewusst MAC-basiert (siehe CLAUDE.md,
-     *       Abschnitt Provisioning), damit die MainUnit den Knoten zuverlaessig
-     *       wiederfindet, unabhaengig vom user-aenderbaren Namen.
+     * @note Purely cosmetic — the AP SSID deliberately stays MAC-based (see
+     *       CLAUDE.md, Provisioning section), so the MainUnit can reliably
+     *       rediscover the node, independent of the user-changeable name.
      */
     bool getActiveDeviceName(char *buffer, size_t len);
 

@@ -9,20 +9,12 @@ namespace
     const char *NAME_KEY = "name";
     const char *HA1_KEY = "ha1";
     const char *PASSWORD_KEY = "password";
+    const char *SYSTEM_NAMESPACE = "System";
 
-    void nvsBegin(bool readOnly)
-    {
-        InternalStorage::begin("System", readOnly);
-    }
-    void nvsEnd()
-    {
-        InternalStorage::end();
-    }
     void loadDeviceHa1(char *buffer, size_t len)
     {
-        nvsBegin(true);
+        InternalStorage::Session session(SYSTEM_NAMESPACE, true);
         InternalStorage::readString(HA1_KEY, buffer, len);
-        nvsEnd();
     }
     void provideDeviceDefaultHa1(char *buffer, size_t len)
     {
@@ -35,16 +27,14 @@ namespace System
 
     void loadDeviceName(char *buffer, size_t len)
     {
-        nvsBegin(true);
+        InternalStorage::Session session(SYSTEM_NAMESPACE, true);
         InternalStorage::readString(NAME_KEY, buffer, len);
-        nvsEnd();
     }
 
     void storeDeviceName(const char *name)
     {
-        nvsBegin(false);
+        InternalStorage::Session session(SYSTEM_NAMESPACE, false);
         InternalStorage::writeString(NAME_KEY, name);
-        nvsEnd();
     }
 
     bool getActiveDeviceName(char *buffer, size_t len)
@@ -68,23 +58,20 @@ namespace System
 
     void loadDevicePassword(char *buffer, size_t len)
     {
-        nvsBegin(true);
+        InternalStorage::Session session(SYSTEM_NAMESPACE, true);
         InternalStorage::readString(PASSWORD_KEY, buffer, len);
-        nvsEnd();
     }
 
     void storeDevicePassword(const char *password)
     {
-        nvsBegin(false);
+        InternalStorage::Session session(SYSTEM_NAMESPACE, false);
         InternalStorage::writeString(PASSWORD_KEY, password);
-        nvsEnd();
     }
 
     void storeDeviceHa1(const char *ha1)
     {
-        nvsBegin(false);
+        InternalStorage::Session session(SYSTEM_NAMESPACE, false);
         InternalStorage::writeString(HA1_KEY, ha1);
-        nvsEnd();
     }
     bool getActiveHa1(char *buffer, size_t len)
     {

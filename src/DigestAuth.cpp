@@ -5,15 +5,18 @@
 namespace {
     constexpr size_t KEY_BUF_LEN = 24;
 
-    constexpr size_t NC_BUF_LEN =16;
+    constexpr size_t NC_BUF_LEN = 16;
     constexpr size_t CNONCE_BUF_LEN = 16;
-    constexpr size_t URI_BUF_LEN = 64;
     constexpr size_t RESPONSE_INPUT_BUF_LEN = 192;
 
-    constexpr size_t HA2_INPUT_BUF_LEN = 8+URI_BUF_LEN; //URI_BUF_LEN + 8 (method)
+    // +1 each for the ':' separator and the '\0' terminator.
+    constexpr size_t HA2_INPUT_BUF_LEN = DigestAuth::MAX_METHOD_LEN + 1 + DigestAuth::MAX_URI_LEN + 1;
 
+    // Tries key="value" first, then falls back to unquoted key=value: RFC
+    // 7616 quotes most Digest fields (realm, nonce, response, uri, cnonce,
+    // opaque) but leaves a few unquoted (algorithm, nc), and this helper is
+    // used for both kinds, so both forms have to be handled generically.
     // @warning '\0' not included
- 
     bool extractValue(const char *line, const char *key, char *dest, size_t destSize)
     {
         char keyQ[KEY_BUF_LEN];
@@ -64,7 +67,7 @@ namespace DigestAuth {
 
     bool verify(const char *authHeader, const char *method, const char *path, const char *ha1){
         char nonce[DigestCrypto::NONCE_HEX_LEN+1]={};
-        char nc[NC_BUF_LEN] ={};
+        char nc[NC_BUF_LEN+1] ={};
         char cnonce[CNONCE_BUF_LEN+1] ={};
         char response[DigestCrypto::SHA256_HEX_LEN+1]={};
 

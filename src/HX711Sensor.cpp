@@ -1,16 +1,24 @@
 #include "HX711Sensor.h"
 #include "InternalStorage.h"
 
-char prefNameSpace[12] = {};
+// Key names within a sensor's NVS namespace — constant across all
+// instances, safe as file-scope (unlike the namespace itself, which must
+// be per-instance, see nvsNamespace()).
 char prefOffset[] = "offset";
 char prefScale[] = "scale";
 
-HX711Sensor::HX711Sensor(int dout, int sck, uint8_t pId)
+void HX711Sensor::nvsNamespace(char *out, size_t len) const
+{
+    snprintf(out, len, "sensor_%d", _pId);
+}
+
+HX711Sensor::HX711Sensor(int dout, int sck, uint8_t pId) : _pId(pId)
 {
     _scale.begin(dout, sck);
     _scale.set_scale();
-    snprintf(prefNameSpace, sizeof(prefNameSpace), "sensor_%d", pId);
-    InternalStorage::begin(prefNameSpace, true);
+    char ns[NVS_NAMESPACE_LEN] = {};
+    nvsNamespace(ns, sizeof(ns));
+    InternalStorage::Session session(ns, true);
     long offset;
     float scale;
     if (InternalStorage::readLong(prefOffset, offset) && InternalStorage::readFloat(prefScale, scale))
@@ -18,7 +26,6 @@ HX711Sensor::HX711Sensor(int dout, int sck, uint8_t pId)
         _scale.set_offset(offset);
         _scale.set_scale(scale);
     }
-    InternalStorage::end();
 }
 bool HX711Sensor::isValid()
 {
@@ -63,22 +70,24 @@ bool HX711Sensor::calibrate(const JsonObjectConst data)
     {
         return false;
     }
-    InternalStorage::begin(prefNameSpace, false);
+    char ns[NVS_NAMESPACE_LEN] = {};
+    nvsNamespace(ns, sizeof(ns));
+    InternalStorage::Session session(ns, false);
     InternalStorage::writeLong(prefOffset, offset);
     _scale.set_offset(offset);
     float newScale = _scale.get_value(10)/refWeight;
     InternalStorage::writeFloat(prefScale, newScale);
-    InternalStorage::end();
     _scale.set_scale(newScale);
     return true;
 }
 
 void HX711Sensor::reset()
 {
-    InternalStorage::begin(prefNameSpace, false);
+    char ns[NVS_NAMESPACE_LEN] = {};
+    nvsNamespace(ns, sizeof(ns));
+    InternalStorage::Session session(ns, false);
     InternalStorage::writeLong(prefOffset, 0);
     InternalStorage::writeFloat(prefScale, 1.0f);
-    InternalStorage::end();
     _scale.set_scale(1.0f);
     _scale.set_offset(0);
 }

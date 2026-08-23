@@ -1,26 +1,25 @@
 #pragma once
 
-// Provisioning-/Status-Webseite, vollstaendig inline (HTML + CSS + JS, kein
-// CDN — im AP-Modus gibt es kein Internet). Liegt als const char[] im
-// memory-mapped Flash des ESP32 -> client.print() streamt es direkt, kein
-// Heap, kein String.
+// Provisioning/status web page, fully inline (HTML + CSS + JS, no CDN —
+// there's no internet in AP mode). Lives as a const char[] in the ESP32's
+// memory-mapped flash -> client.print() streams it directly, no heap,
+// no String.
 //
-// Vier Tabs, immer alle sichtbar (kein Modus-abhaengiges Ein-/Ausblenden,
-// haelt die JS-Logik einfach): Status | Password | WiFi | Sensors.
-// Status ist die neue Startseite und funktioniert eigenstaendig auch im
-// laufenden Betrieb (STA, provisioned=true) — Geraetename + System-Info,
-// kein abgeschlossenes Onboarding noetig. Live-Sensorwerte + aktuelle
-// Kalibrierwerte stehen bewusst nur noch im Sensors-Tab (kein Dashboard
-// hier, das macht spaeter die Companion App). Kein eigener Finish-Tab mehr
-// — stattdessen ein Banner im Status-Tab, der nur erscheint, solange
-// provisioned=false ist ("Finish & Reboot" im laufenden Betrieb erneut
-// anzuklicken waere ohnehin harmlos, aber der Banner ist dann gar nicht
-// mehr sichtbar).
+// Four tabs, always all visible (no mode-dependent show/hide, keeps the JS
+// logic simple): Status | Password | WiFi | Sensors. Status is the new
+// landing page and works standalone even during live operation (STA,
+// provisioned=true) — device name + system info, no completed onboarding
+// required. Live sensor values + current calibration values deliberately
+// live only in the Sensors tab (no dashboard here, the Companion App will
+// handle that later). No separate Finish tab anymore — instead a banner in
+// the Status tab that only appears while provisioned=false ("Finish &
+// Reboot" would be harmless to click again during live operation anyway,
+// but the banner isn't visible then at all).
 //
-// Datengetrieben: Das JS baut Sensor-Uebersicht und -Tabs aus GET
-// /calibrationinfo auf, damit hier kein Sensor-Wissen hartcodiert ist
-// (gleiches Prinzip wie die Companion App). Neue Sensortypen brauchen keine
-// Aenderung an dieser Datei.
+// Data-driven: the JS builds the sensor overview and tabs from GET
+// /calibrationinfo, so no sensor knowledge is hardcoded here (same
+// principle as the Companion App). New sensor types don't require any
+// change to this file.
 inline const char PROVISIONING_HTML[] = R"html(<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -118,11 +117,11 @@ button:disabled{opacity:.5;cursor:default}
 
 </div>
 <script>
-// 6s statt 2s: mehrere gleichzeitig offene Browser/Tabs sollen den C3 nicht
-// dauerbeschaeftigen (jeder Poll ist ein Wake-Zyklus, siehe Light Sleep in
-// CLAUDE.md). Manueller Refresh-Button im Header deckt den "sofort sehen"-Fall
-// ab, Visibility-Pause stoppt Polling komplett, solange der Browser-Tab im
-// Hintergrund ist.
+// 6s instead of 2s: several simultaneously open browsers/tabs shouldn't keep
+// the C3 permanently busy (every poll is a wake cycle, see Light Sleep in
+// CLAUDE.md). The manual refresh button in the header covers the "see it
+// right now" case, visibility pause stops polling entirely while the
+// browser tab is in the background.
 var POLL_MS=6000;
 var pollTimer=null;
 var currentTab=0;
@@ -229,17 +228,17 @@ async function saveWifi(){
 }
 
 var collected={};
-var sensorUnits={}; // aus /calibrationinfo gecacht — /sensors liefert die Einheit nicht bei jedem Poll mit
-var expandedSensors={}; // merkt Auf/Zu-Zustand ueber loadCalibrationInfo()-Rebuilds hinweg
+var sensorUnits={}; // cached from /calibrationinfo — /sensors doesn't include the unit on every poll
+var expandedSensors={}; // remembers open/closed state across loadCalibrationInfo() rebuilds
 async function startCalibration(idx){
-  // Einmalige Aktion, kein Toggle mehr: Reset + Aufklappen. Der Button rendert
-  // sich danach gar nicht mehr (siehe loadCalibrationInfo) — nichts mehr zum
-  // Abbrechen, der Reset ist ja schon gelaufen.
+  // One-shot action, no longer a toggle: reset + expand. The button doesn't
+  // render again afterward (see loadCalibrationInfo) — nothing left to
+  // cancel, the reset has already happened.
   var ok=false;
   try{ var r=await fetch('/reset/'+idx,{method:'POST'}); ok=r.ok; }catch(e){}
   expandedSensors[idx]=true;
   await loadCalibrationInfo();
-  var m=document.getElementById('sMsg_'+idx); // erst NACH dem Neuaufbau holen, sonst stale
+  var m=document.getElementById('sMsg_'+idx); // fetch only AFTER the rebuild, otherwise stale
   if(m) msg(m, ok?'Reset ✓ — sensor now at raw values':'Reset failed', ok);
   refreshLiveValues();
 }
@@ -306,7 +305,7 @@ async function capture(idx,key,btn){
   var cap=document.getElementById('cap_'+idx+'_'+key);
   btn.disabled=true;cap.textContent=' …';
   try{
-    await fetch('/reset/'+idx,{method:'POST'});      // Raw-ADC garantieren
+    await fetch('/reset/'+idx,{method:'POST'});      // guarantee raw ADC
     var d=await (await fetch('/sensors')).json();
     var v=d['sensor:'+idx].value;
     collected[idx][key]=v;
@@ -325,12 +324,13 @@ async function calibrate(idx){
   try{
     var r=await fetch('/calibrate/'+idx,{method:'POST',body:JSON.stringify(body)});
     if(r.ok){
-      // Erfolg: Karte zurueck in den Ursprungszustand (zugeklappt) statt offen
-      // stehen zu lassen — die neuen Werte sieht man ja am Live-/Current-Wert.
+      // Success: put the card back into its original state (collapsed)
+      // instead of leaving it open — the new values are visible in the
+      // Live/current value anyway.
       expandedSensors[idx]=false;
-      await loadCalibrationInfo(); // "current" Read-back neu laden, Karte klappt zu
+      await loadCalibrationInfo(); // reload the "current" read-back, card collapses
     }else{
-      msg(m,'Error – check values',false); // Karte bleibt offen, damit die Eingaben korrigiert werden koennen
+      msg(m,'Error – check values',false); // card stays open so the inputs can be corrected
     }
   }catch(e){msg(m,'Connection failed',false);}
   refreshLiveValues();

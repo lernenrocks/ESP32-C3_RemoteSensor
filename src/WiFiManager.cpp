@@ -16,8 +16,12 @@ namespace WiFiManager
 
     void initWifi()
     {
-        // Diagnose: einmalig den Disconnect-Grund mitloggen. Zeigt in Klartext,
-        // ob Abrisse vom Link kommen (200 = BEACON_TIMEOUT) oder von Auth/Router.
+#ifdef DISABLE_LIGHT_SLEEP
+        // Diagnostics: log the disconnect reason once. Shows in plain text
+        // whether drops come from the link (200 = BEACON_TIMEOUT) or from
+        // auth/router. Only registered in the debug build — in the sleep
+        // build the console flaps on every wake/sleep cycle anyway, runtime
+        // logs aren't reliably visible there (see CLAUDE.md, Light Sleep section).
         static bool eventsRegistered = false;
         if (!eventsRegistered)
         {
@@ -27,13 +31,15 @@ namespace WiFiManager
             }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
             eventsRegistered = true;
         }
+#endif
 
-        // AP-/Provisioning-Modus laeuft eigenstaendig — nichts nachzuziehen.
+        // AP/provisioning mode runs independently — nothing to do here.
         if (WiFi.getMode() == WIFI_MODE_AP)
             return;
 
-        // Cooldown gilt nur fuer Folge-Versuche; der erste Connect laeuft sofort
-        // (frueher verzoegerte der ULONG_MAX-Startwert ihn um ~10 s).
+        // Cooldown only applies to subsequent attempts; the first connect
+        // runs immediately (previously the ULONG_MAX starting value delayed
+        // it by ~10s).
         static unsigned long lastTry = 0;
         static bool everTried = false;
         if (everTried && millis() - lastTry < WIFI_CONNECTION_TRY_COOLDOWN)
@@ -42,11 +48,12 @@ namespace WiFiManager
         char ssid[SSID_LEN] = {};
         char pw[PW_LEN] = {};
         bool provisioned = false;
-        InternalStorage::begin("Wifi", true);
-        InternalStorage::readString("ssid", ssid, sizeof(ssid));
-        InternalStorage::readString("password", pw, sizeof(pw));
-        InternalStorage::readBool("provisioned", provisioned);
-        InternalStorage::end();
+        {
+            InternalStorage::Session session("Wifi", true);
+            InternalStorage::readString("ssid", ssid, sizeof(ssid));
+            InternalStorage::readString("password", pw, sizeof(pw));
+            InternalStorage::readBool("provisioned", provisioned);
+        }
 
         if (ssid[0] == '\0' || !provisioned)
         {
@@ -60,16 +67,20 @@ namespace WiFiManager
             WiFi.mode(WIFI_AP);
             WiFi.softAP(apSsid, apPw);
             HttpServer::begin();
+#ifdef DISABLE_LIGHT_SLEEP
             IPAddress apIp = WiFi.softAPIP();
             Serial.printf("[INFO] AP mode: SSID=%s IP=%u.%u.%u.%u\n", apSsid, apIp[0], apIp[1], apIp[2], apIp[3]);
+#endif
             return;
         }
 
-        // STA-Connect anstossen. setAutoReconnect laesst den WiFi-Treiber
-        // transiente Drops selbst abfangen; kein disconnect(true)+Delay mehr —
-        // das power-cyclete den Funk und blockierte 1 s pro Versuch.
+        // Trigger the STA connect. setAutoReconnect lets the WiFi driver
+        // catch transient drops on its own; no more disconnect(true)+delay —
+        // that power-cycled the radio and blocked for 1s per attempt.
         everTried = true;
+#ifdef DISABLE_LIGHT_SLEEP
         Serial.printf("[INFO] STA connect: ssid=\"%s\"\n", ssid);
+#endif
         WiFi.mode(WIFI_STA);
         WiFi.setAutoReconnect(true);
         WiFi.begin(ssid, pw);
@@ -81,11 +92,10 @@ namespace WiFiManager
         lastTry = millis();
         if (isConnected())
         {
-            HttpServer::begin(); // idempotent -> kein Re-begin-Leak bei Reconnect
-            Serial.println(WiFi.localIP());
-            // Modem-Sleep: Voraussetzung fuer esp_sleep_enable_wifi_wakeup.
-            // Der AP puffert, die Station wacht am DTIM-Beacon -> eingehende
-            // TCP-Anfrage weckt den schlafenden C3.
+            HttpServer::begin(); // idempotent -> no re-begin leak on reconnect
+            // Modem sleep: prerequisite for esp_sleep_enable_wifi_wakeup.
+            // The AP buffers, the station wakes at the DTIM beacon -> an
+            // incoming TCP request wakes the sleeping C3.
             esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         }
     }
@@ -103,7 +113,7 @@ namespace WiFiManager
         last = millis();
         if (isConnected())
         {
-            IPAddress ip = WiFi.localIP(); // Oktette einzeln -> kein String/Heap
+            IPAddress ip = WiFi.localIP(); // octets individually -> no String/heap
             Serial.printf("[INFO] up %lu ms | connected %u.%u.%u.%u | rssi %d\n",
                           millis(), ip[0], ip[1], ip[2], ip[3], WiFi.RSSI());
         }

@@ -357,7 +357,7 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 - `read(float& value)` — **public, non-virtual** — einziger Einstiegspunkt; ruft intern `isValid()` und `readRaw()` auf
 - `isValid()` — **private pure virtual** — prüft ob Sensor antwortet
 - `readRaw(float& buffer)` — **private pure virtual** — schreibt Rohwert in Buffer
-- Kein `id()` — der Array-Index im SensorManager ist die ID (`sensor:0` = Index 0)
+- Kein `id()` — der Array-Index im SensorManager ist die ID (`sensor:0` = Index 0). Gilt für die **öffentliche Schnittstelle**: kein Getter, kein Weg für andere Module, einen Sensor nach seiner Position zu fragen. Eine konkrete Unterklasse darf ihren Index trotzdem **privat** halten, wenn sie ihn für einen eigenen, internen Zweck braucht (Beispiel: `HX711Sensor::_pId` für den eigenen NVS-Namespace, siehe unten) — solange er nie über einen Getter nach außen dringt und nie als allgemeines Identitätsmerkmal dient. Bewusst **nicht** in `SensorBase` zentralisiert, obwohl ein künftiger zweiter kalibrierbarer Sensortyp vermutlich dasselbe braucht: verfrühte Abstraktion für einen Fall, den's noch nicht gibt. Erst hochziehen, wenn ein zweites echtes Beispiel existiert.
 - Virtueller Destruktor: `virtual ~SensorBase() = default`
 
 Konvention: private Member mit `_`-Prefix (`_scale`).
@@ -374,10 +374,10 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 ### HX711Sensor
 `include/HX711Sensor.h` / `src/HX711Sensor.cpp`
 
-- Konstruktor: `HX711Sensor(int dout, int sck)`
+- Konstruktor: `HX711Sensor(int dout, int sck, uint8_t pId)` — `pId` wird **privat** als `_pId` gehalten (kein `id()` nach außen, siehe SensorBase-Konvention oben), dient nur dem eigenen NVS-Namespace: `nvsNamespace()` baut daraus bei jedem Zugriff frisch `"sensor_<pId>"` (kein gecachter/globaler Puffer — ein früherer globaler Puffer dafür war ein Bug, der bei mehr als einem HX711 falsche Kalibrierdaten gelesen/geschrieben hätte, mittlerweile gefixt)
 - `isValid()`: `return _scale.is_ready()`
-- `readRaw()`: `buffer = static_cast<float>(_scale.get_value(3))` — 3 Messungen gemittelt (~300ms Blockzeit), expliziter Cast; wendet intern Kalibrierfaktor und Tara aus NVS an
-- Kalibrierungsparameter in NVS: Skalierungsfaktor + Tara
+- `readRaw()`: `buffer = static_cast<float>(_scale.get_units(10))` — 10 Messungen gemittelt, expliziter Cast; wendet intern Kalibrierfaktor und Tara aus NVS an
+- Kalibrierungsparameter in NVS: Skalierungsfaktor + Tara, Namespace `sensor_<pId>` (Keys `offset`/`scale`)
 - Anzahl Messungen anpassen wenn Werte schwanken (erhöhen) oder TCP-Timeout der MainUnit überschritten wird (reduzieren)
 
 ### DigestCrypto

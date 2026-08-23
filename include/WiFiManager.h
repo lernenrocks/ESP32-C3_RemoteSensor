@@ -14,8 +14,8 @@ bool isConnected();
 
 /**
  * @brief prints connection state (IP/RSSI or DISCONNECTED) — self-throttled.
- * @note Debug-Heartbeat: nur im DISABLE_LIGHT_SLEEP-Build aufrufen; im
- *       Sleep-Build stirbt die USB-Konsole ohnehin.
+ * @note Debug heartbeat: only call in the DISABLE_LIGHT_SLEEP build; the
+ *       USB console dies during Light Sleep anyway.
  */
 void heartbeat();
 }

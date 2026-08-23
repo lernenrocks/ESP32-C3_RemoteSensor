@@ -88,9 +88,15 @@ namespace SensorManager
         for (size_t i = 0; i < sensorCount; i++)
         {
             char steps[256] = {};
-            sensorArray[i].sensor->getCalibrationJson(steps, sizeof(steps));
+            if (!sensorArray[i].sensor->getCalibrationJson(steps, sizeof(steps)))
+            {
+                snprintf(steps, sizeof(steps), "[]"); // truncated -> fall back to a valid, empty value
+            }
             char currentValues[64] = {};
-            sensorArray[i].sensor->getCalibrationValuesJson(currentValues, sizeof(currentValues));
+            if (!sensorArray[i].sensor->getCalibrationValuesJson(currentValues, sizeof(currentValues)))
+            {
+                snprintf(currentValues, sizeof(currentValues), "{}");
+            }
             size_t written = snprintf(buf + offset, len - offset,
                                       "{\"index\":%d,\"type\":\"%s\",\"unit\":\"%s\",\"steps\":%s,\"current\":%s},",
                                       i, sensorArray[i].type, sensorArray[i].sensor->getUnit(), steps, currentValues);

@@ -3,6 +3,13 @@
 
 namespace DigestAuth
 {
+    // Max content length (excl. '\0') that verify() actually hashes into HA2
+    // for method/path — public so callers (HttpServer) can size their own
+    // method[]/path[] buffers directly from these instead of picking numbers
+    // independently. A mismatch here would silently truncate the HA2 input
+    // and make auth fail for no visible reason.
+    constexpr size_t MAX_METHOD_LEN = 7;  // only GET/POST are routed today, plenty of headroom
+    constexpr size_t MAX_URI_LEN = 63;    // longest current path ("/provision/wifi/reset") is 22 chars
 
     /**
      * @brief Build the WWW-Authenticate Header for 401 challenge

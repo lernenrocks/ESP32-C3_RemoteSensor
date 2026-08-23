@@ -12,17 +12,18 @@ extern uint32_t wakeCount;
 
 constexpr uint BUFFER_SIZE = 1024;
 constexpr uint BODY_SIZE = 256;
-// WPA2-PSK verlangt mindestens 8 Zeichen -- das Device-Passwort dient auch
-// als AP-Passwort, also muss es diese Grenze einhalten.
+// WPA2-PSK requires at least 8 characters -- the device password also
+// serves as the AP password, so it must respect this limit.
 constexpr size_t MIN_PASSWORD_LEN = 8;
-// Inaktivitaets-Timeout beim Header-Lesen: bricht ab, wenn nach dem Verbinden
-// keine (weiteren) Daten kommen. Schuetzt vor halb-offenen/abgerissenen
-// Verbindungen, bei denen client.connected() haengen bleibt (kein RST).
+// Inactivity timeout while reading the header: aborts if no (further) data
+// arrives after connecting. Protects against half-open/dropped connections
+// where client.connected() stays stuck (no RST).
 constexpr unsigned long REQUEST_READ_TIMEOUT_MS = 1500UL;
-// Timeout fuer den WLAN-Testconnect bei POST /provision/wifi — bewusst gleich
-// dem WIFI_CONNECTION_TIMEOUT aus WiFiManager.cpp, aber lokal dupliziert statt
-// geteilt: HttpServer haengt sonst von WiFiManager ab, WiFiManager schon von
-// HttpServer (startet/stoppt ihn) — ein echter Include-Zirkel auf Modulebene.
+// Timeout for the WLAN test-connect in POST /provision/wifi — deliberately
+// the same as WIFI_CONNECTION_TIMEOUT in WiFiManager.cpp, but duplicated
+// locally instead of shared: otherwise HttpServer would depend on
+// WiFiManager, while WiFiManager already depends on HttpServer (starts/
+// stops it) — a real include cycle at the module level.
 constexpr unsigned long WIFI_TEST_CONNECT_TIMEOUT_MS = 5000UL;
 namespace
 {
@@ -30,20 +31,20 @@ namespace
     bool serverRunning = false;
     char requestHeader[BUFFER_SIZE] = {};
 
-    // Testet STA-Credentials, ohne den aktuellen Modus dauerhaft zu verlassen.
-    // Zwei Aufrufkontexte laut REST-API-Doku zu /provision/wifi:
-    //  - AP-Onboarding (provisioned=false): Modus AP+STA-Concurrent, damit der
-    //    bereits laufende Onboarding-AP fuer Browser/Handy aktiv bleibt.
-    //  - Netzwechsel im laufenden STA-Betrieb (provisioned=true, MainUnit-Umzug
-    //    mit bekanntem Zielnetz): kein AP vorhanden/konfiguriert -> reiner
-    //    STA-Test, sonst wuerde WIFI_MODE_APSTA kurzzeitig einen unkonfigurierten,
-    //    ungeschuetzten AP oeffnen (verboten, siehe Sicherheit in CLAUDE.md).
-    // In beiden Faellen wird am Ende exakt der Ausgangsmodus wiederhergestellt.
+    // Tests STA credentials without permanently leaving the current mode.
+    // Two call contexts per the REST API docs for /provision/wifi:
+    //  - AP onboarding (provisioned=false): AP+STA concurrent mode, so the
+    //    already-running onboarding AP stays active for the browser/phone.
+    //  - Network change during live STA operation (provisioned=true,
+    //    MainUnit move to a known target network): no AP present/configured
+    //    -> plain STA test, otherwise WIFI_MODE_APSTA would briefly open an
+    //    unconfigured, unprotected AP (forbidden, see Security in CLAUDE.md).
+    // In both cases, the original mode is restored exactly at the end.
     bool testStaConnect(const char *ssid, const char *password)
     {
         wifi_mode_t originalMode = WiFi.getMode();
         wifi_mode_t testMode = (originalMode == WIFI_MODE_AP) ? WIFI_MODE_APSTA : WIFI_MODE_STA;
-        WiFi.persistent(false); // nur ein Test, kein Grund den WiFi-NVS-Blob zu beschreiben
+        WiFi.persistent(false); // just a test, no reason to write the WiFi NVS blob
         WiFi.mode(testMode);
         WiFi.begin(ssid, password);
         unsigned long start = millis();
@@ -57,9 +58,10 @@ namespace
         return connected;
     }
 
-    // Erste Stelle im Code, an der user-eingegebener Freitext (Geraetename) in
-    // handgebautes JSON eingebettet wird — Escaping ist laut CLAUDE.md Pflicht
-    // (\", \\, \n, \r, \t, \uXXXX), sonst kann ein Name das Response-JSON brechen.
+    // First place in the code where user-entered free text (device name)
+    // gets embedded into hand-built JSON — escaping is mandatory per
+    // CLAUDE.md (\", \\, \n, \r, \t, \uXXXX), otherwise a name could break
+    // the response JSON.
     void escapeJsonString(const char *in, char *out, size_t outLen)
     {
         size_t o = 0;
@@ -116,9 +118,10 @@ namespace
         char ssidEscaped[33 * 6] = {};
         escapeJsonString(ssid, ssidEscaped, sizeof(ssidEscaped));
         bool provisioned = false;
-        InternalStorage::begin("Wifi", true);
-        InternalStorage::readBool("provisioned", provisioned);
-        InternalStorage::end();
+        {
+            InternalStorage::Session session("Wifi", true);
+            InternalStorage::readBool("provisioned", provisioned);
+        }
         char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
         bool passwordSet = System::getActiveHa1(ha1, sizeof(ha1));
         char buffer[BUFFER_SIZE] = {};
@@ -189,13 +192,16 @@ namespace HttpServer
             }
             else if (millis() - lastData > REQUEST_READ_TIMEOUT_MS)
             {
-                // Keine Daten mehr -> abgerissene/stockende Verbindung aufgeben.
+                // No more data -> give up on the dropped/stalled connection.
                 client.stop();
                 return false;
             }
         }
-        char method[8] = {};
-        char path[64] = {};
+        // Sized from DigestAuth's own limits, not chosen independently — it
+        // hashes method+path into HA2, a mismatch here would silently
+        // truncate that input and break auth for no visible reason.
+        char method[DigestAuth::MAX_METHOD_LEN + 1] = {};
+        char path[DigestAuth::MAX_URI_LEN + 1] = {};
         const char *sp1 = strchr(requestHeader, ' ');
         if (sp1)
         {
@@ -216,23 +222,28 @@ namespace HttpServer
             }
         }
         char deviceHa1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
+#ifdef DISABLE_LIGHT_SLEEP
         bool ownPassword = System::getActiveHa1(deviceHa1, sizeof(deviceHa1));
         Serial.printf("[INFO] %s %s | ha1: %s\n", method, path, ownPassword ? "own" : "default");
+#else
+        System::getActiveHa1(deviceHa1, sizeof(deviceHa1));
+#endif
         if (!DigestAuth::verify(requestHeader, method, path, deviceHa1))
         {
+#ifdef DISABLE_LIGHT_SLEEP
             Serial.println("[WARN] auth failed");
+#endif
             char wwwAuth[160] = {};
             DigestAuth::buildWwwAuthenticate(wwwAuth, sizeof(wwwAuth));
             client.printf("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", wwwAuth);
             client.stop();
             return true;
         }
-        Serial.println("[INFO] auth ok");
 
         uint8_t sensorIdx;
         if (strstr(requestHeader, "GET / "))
         {
-            // Seite liegt im Flash (const char[]) -> direkt streamen, kein Heap.
+            // Page lives in flash (const char[]) -> stream directly, no heap.
             client.printf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: %u\r\n\r\n", strlen(PROVISIONING_HTML));
             client.print(PROVISIONING_HTML);
         }
@@ -254,7 +265,7 @@ namespace HttpServer
             DeserializationError err = deserializeJson(doc, client);
             if (err || doc["ssid"].isNull() || doc["password"].isNull())
             {
-                // Parse-Fehler oder fehlende Felder: nichts schreiben, eine Response.
+                // Parse error or missing fields: write nothing, one response.
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
             }
             else
@@ -262,17 +273,19 @@ namespace HttpServer
                 const char *ssid = doc["ssid"];
                 const char *pw = doc["password"];
                 bool connected = testStaConnect(ssid, pw);
+#ifdef DISABLE_LIGHT_SLEEP
                 Serial.printf("[INFO] WiFi test-connect ssid=\"%s\": %s\n", ssid, connected ? "ok" : "failed");
-                // Nur bei Erfolg in NVS uebernehmen — bei Fehlschlag bleiben die
-                // alten (funktionierenden) Zugangsdaten stehen, damit initWifi()
-                // beim naechsten Reconnect-Versuch von selbst zum alten Netz
-                // zurueckfindet, statt mit kaputten neuen Daten haengen zu bleiben.
+#endif
+                // Only commit to NVS on success — on failure, the old
+                // (working) credentials stay in place, so initWifi() finds
+                // its way back to the old network by itself on the next
+                // reconnect attempt, instead of getting stuck with broken
+                // new data.
                 if (connected)
                 {
-                    InternalStorage::begin("Wifi", false);
+                    InternalStorage::Session session("Wifi", false);
                     InternalStorage::writeString("ssid", ssid);
                     InternalStorage::writeString("password", pw);
-                    InternalStorage::end();
                 }
                 char body[24] = {};
                 snprintf(body, sizeof(body), "{\"connected\":%s}\n", connected ? "true" : "false");
@@ -302,7 +315,9 @@ namespace HttpServer
             client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             client.stop();
             delay(100);
-            Serial.println("restart now");
+#ifdef DISABLE_LIGHT_SLEEP
+            Serial.println("[INFO] factory reset, rebooting");
+#endif
             ESP.restart();
         }
         else if (strstr(requestHeader, "POST /provision/finish"))
@@ -310,29 +325,37 @@ namespace HttpServer
             char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
             if (!System::getActiveHa1(ha1, sizeof(ha1)))
             {
+#ifdef DISABLE_LIGHT_SLEEP
                 Serial.println("[WARN] finish blocked: no device password set");
+#endif
                 client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
                 client.stop();
                 return true;
             }
-            InternalStorage::begin("Wifi", false);
-            InternalStorage::writeBool("provisioned", true);
-            InternalStorage::end();
+            {
+                InternalStorage::Session session("Wifi", false);
+                InternalStorage::writeBool("provisioned", true);
+            }
             client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             client.stop();
             delay(100);
-            Serial.println("restart now");
+#ifdef DISABLE_LIGHT_SLEEP
+            Serial.println("[INFO] provisioning finished, rebooting into STA");
+#endif
             ESP.restart();
         }
         else if (strstr(requestHeader, "POST /provision/wifi/reset") != 0)
         {
-            InternalStorage::begin("Wifi", false);
-            InternalStorage::writeBool("provisioned", false);
-            InternalStorage::end();
+            {
+                InternalStorage::Session session("Wifi", false);
+                InternalStorage::writeBool("provisioned", false);
+            }
             client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             client.stop();
             delay(100);
-            Serial.println("restart now");
+#ifdef DISABLE_LIGHT_SLEEP
+            Serial.println("[INFO] wifi reset, rebooting into AP");
+#endif
             ESP.restart();
         }
         else if (strstr(requestHeader, "POST /provision/password") != 0)
@@ -350,7 +373,9 @@ namespace HttpServer
                 DigestCrypto::computeHa1(pw, ha1, sizeof(ha1));
                 System::storeDeviceHa1(ha1);
                 System::storeDevicePassword(pw);
+#ifdef DISABLE_LIGHT_SLEEP
                 Serial.println("[INFO] device password updated");
+#endif
                 client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             }
         }
@@ -366,7 +391,9 @@ namespace HttpServer
             else
             {
                 System::storeDeviceName(name);
+#ifdef DISABLE_LIGHT_SLEEP
                 Serial.printf("[INFO] device name set to \"%s\"\n", name);
+#endif
                 client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
             }
         }
