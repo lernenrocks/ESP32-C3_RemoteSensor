@@ -4,19 +4,45 @@
 #include <DHT.h>
 #include "DHT22Temperature.h"
 #include "DHT22Humidity.h"
+#include "InternalStorage.h"
+#include "JsonEscape.h"
 
 DHT dht(DHT22_DATA, DHT22);
-
+namespace SensorType
+{
+    constexpr const char *HX711 = "HX711";
+    constexpr const char *DHT22_TEMP = "DHT22_TEMP";
+    constexpr const char *DHT22_HUM = "DHT22_HUMIDITY";
+}
 namespace
 {
-    SensorManager::SensorEntry sensorArray[SensorManager::MAX_SENSORS];
+    constexpr uint8_t MAX_SENSORS = 4;
+    constexpr uint8_t KEY_LEN = 15;
+    constexpr const char *NVS_NAMESPACE_SENSOR_META = "SensorMeta";
+    constexpr const char *SENSOR_NAME_KEY_PREFIX = "sName";
+    constexpr const char *VALUE_OFFSET_KEY_PREFIX = "vOffset";
+    constexpr const char *SENSOR_NAME_PREFIX = "Sensor";
+    struct SensorEntry
+    {
+        SensorBase *sensor;
+        const char *type;
+        float valueOffset;
+    };
+
+    SensorEntry sensorArray[MAX_SENSORS];
     uint8_t sensorCount = 0;
 
     bool addSensor(SensorBase *sensor, const char *type)
     {
-        if (sensorCount < SensorManager::MAX_SENSORS)
+        if (sensorCount < MAX_SENSORS)
         {
-            sensorArray[sensorCount++] = {sensor, type};
+            float valueOffset = 0.0f;
+            char key[KEY_LEN] = {};
+            snprintf(key, sizeof(key), "%s%d", VALUE_OFFSET_KEY_PREFIX, sensorCount);
+            InternalStorage::Session session(NVS_NAMESPACE_SENSOR_META, true);
+            InternalStorage::readFloat(key, valueOffset);
+            sensorArray[sensorCount] = {sensor, type, valueOffset};
+            sensorCount++;
             return true;
         }
         return false;
@@ -25,6 +51,47 @@ namespace
 
 namespace SensorManager
 {
+
+    bool getSensorName(uint8_t idx, char *buffer, size_t len)
+    {
+        if (idx >= sensorCount)
+            return false;
+        char key[KEY_LEN] = {};
+        snprintf(key, sizeof(key), "%s%d", SENSOR_NAME_KEY_PREFIX, idx);
+        InternalStorage::Session session(NVS_NAMESPACE_SENSOR_META, true);
+        if (!InternalStorage::readString(key, buffer, len) || buffer[0] == '\0')
+        {
+            snprintf(buffer, len, "%s %d", SENSOR_NAME_PREFIX, idx);
+        }
+        return true;
+    }
+
+    bool setSensorName(uint8_t idx, const char *name)
+    {
+        if (idx >= sensorCount || strlen(name) >= SENSOR_NAME_LEN)
+        {
+            return false;
+        }
+        char key[KEY_LEN] = {};
+        snprintf(key, sizeof(key), "%s%d", SENSOR_NAME_KEY_PREFIX, idx);
+        InternalStorage::Session session(NVS_NAMESPACE_SENSOR_META, false);
+        return InternalStorage::writeString(key, name);
+    }
+
+    bool setValueOffset(uint8_t idx, float value)
+    {
+        if (idx >= sensorCount)
+            return false;
+        char key[KEY_LEN] = {};
+        snprintf(key, sizeof(key), "%s%d", VALUE_OFFSET_KEY_PREFIX, idx);
+        InternalStorage::Session session(NVS_NAMESPACE_SENSOR_META, false);
+        if (InternalStorage::writeFloat(key, value))
+        {
+            sensorArray[idx].valueOffset = value;
+            return true;
+        }
+        return false;
+    }
 
     bool getSensorDataJson(char sensorDataJson[], size_t len)
     {
@@ -43,6 +110,7 @@ namespace SensorManager
             char valueString[16];
             if (valid)
             {
+                value-=sensorArray[i].valueOffset; //substracts offset (aka tara).
                 char formatLiteral[8];
                 snprintf(formatLiteral, sizeof(formatLiteral), "%%.%df", sensorArray[i].sensor->getPrecision());
                 snprintf(valueString, sizeof(valueString), formatLiteral, value);
@@ -97,9 +165,13 @@ namespace SensorManager
             {
                 snprintf(currentValues, sizeof(currentValues), "{}");
             }
+            char name[SENSOR_NAME_LEN]={};
+            getSensorName(i,name,sizeof(name));
+            char nameEscaped[SENSOR_NAME_LEN*6]={};
+            JsonEscape::escape(name,nameEscaped,sizeof(nameEscaped));
             size_t written = snprintf(buf + offset, len - offset,
-                                      "{\"index\":%d,\"type\":\"%s\",\"unit\":\"%s\",\"steps\":%s,\"current\":%s},",
-                                      i, sensorArray[i].type, sensorArray[i].sensor->getUnit(), steps, currentValues);
+                                      "{\"index\":%d,\"name\":\"%s\",\"type\":\"%s\",\"unit\":\"%s\",\"offset\":%f,\"steps\":%s,\"current\":%s},",
+                                      i, nameEscaped, sensorArray[i].type, sensorArray[i].sensor->getUnit(),sensorArray[i].valueOffset, steps, currentValues);
             if (written >= len - offset)
             {
                 valid = false;
@@ -147,7 +219,13 @@ namespace SensorManager
         }
         else
         {
-            return sensorArray[idx].sensor->calibrate(data);
+
+            if (sensorArray[idx].sensor->calibrate(data))
+            {
+                setValueOffset(idx,0.0f);
+                return true;
+            }
+            return false;
         }
     }
 
@@ -157,6 +235,7 @@ namespace SensorManager
         {
             return false;
         }
+        setValueOffset(idx,0.0f);
         sensorArray[idx].sensor->reset();
         return true;
     }

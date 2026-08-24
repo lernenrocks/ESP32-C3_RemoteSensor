@@ -32,6 +32,18 @@ constexpr unsigned long REQUEST_READ_TIMEOUT_MS = 1500UL;
 // WiFiManager, while WiFiManager already depends on HttpServer (starts/
 // stops it) — a real include cycle at the module level.
 constexpr unsigned long WIFI_TEST_CONNECT_TIMEOUT_MS = 5000UL;
+
+// Debug-only logging, collapsed to one call site instead of a scattered
+// #ifdef/Serial.printf/#endif block wherever a route wants to log something.
+// A macro, not a no-op function: when DISABLE_LIGHT_SLEEP isn't defined, this
+// vanishes at the preprocessor stage -- guaranteed zero cost, not just
+// "probably optimized away" the way a no-op function call would be.
+#ifdef DISABLE_LIGHT_SLEEP
+#define DEBUG_LOG(...) Serial.printf(__VA_ARGS__)
+#else
+#define DEBUG_LOG(...)
+#endif
+
 namespace
 {
     WiFiServer server(80);
@@ -63,6 +75,15 @@ namespace
         WiFi.disconnect(true);
         WiFi.mode(originalMode);
         return connected;
+    }
+
+    // --- GET handlers ---
+
+    void handleRoot(WiFiClient &client)
+    {
+        // Page lives in flash (const char[]) -> stream directly, no heap.
+        client.printf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: %u\r\n\r\n", strlen(PROVISIONING_HTML));
+        client.print(PROVISIONING_HTML);
     }
 
     void printSensorInfo(WiFiClient &client)
@@ -119,6 +140,163 @@ namespace
         client.print(buffer);
         client.print("\n");
     }
+
+    // --- POST handlers ---
+
+    void handleProvisionWifi(WiFiClient &client)
+    {
+        StaticJsonDocument<BODY_SIZE> doc;
+        DeserializationError err = deserializeJson(doc, client);
+        if (err || doc["ssid"].isNull() || doc["password"].isNull())
+        {
+            // Parse error or missing fields: write nothing, one response.
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            return;
+        }
+        const char *ssid = doc["ssid"];
+        const char *pw = doc["password"];
+        bool connected = testStaConnect(ssid, pw);
+        DEBUG_LOG("[INFO] WiFi test-connect ssid=\"%s\": %s\n", ssid, connected ? "ok" : "failed");
+        // Only commit to NVS on success — on failure, the old
+        // (working) credentials stay in place, so initWifi() finds
+        // its way back to the old network by itself on the next
+        // reconnect attempt, instead of getting stuck with broken
+        // new data.
+        if (connected)
+        {
+            InternalStorage::Session session("Wifi", false);
+            InternalStorage::writeString("ssid", ssid);
+            InternalStorage::writeString("password", pw);
+        }
+        char body[24] = {};
+        snprintf(body, sizeof(body), "{\"connected\":%s}\n", connected ? "true" : "false");
+        client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(body));
+        client.print(body);
+    }
+
+    void handleCalibrate(WiFiClient &client, uint8_t idx)
+    {
+        StaticJsonDocument<BODY_SIZE> doc;
+        DeserializationError err = deserializeJson(doc, client);
+        if (err || !SensorManager::calibrateSensor(idx, doc.as<JsonObjectConst>()))
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        else
+            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+    }
+
+    void handleReset(WiFiClient &client, uint8_t idx)
+    {
+        if (SensorManager::resetSensor(idx))
+            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+        else
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    }
+
+    void handleFactoryReset(WiFiClient &client)
+    {
+        InternalStorage::erase();
+        client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+        client.stop();
+        delay(100);
+        DEBUG_LOG("[INFO] factory reset, rebooting\n");
+        ESP.restart();
+    }
+
+    void handleProvisionFinish(WiFiClient &client)
+    {
+        char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
+        if (!System::getActiveHa1(ha1, sizeof(ha1)))
+        {
+            DEBUG_LOG("[WARN] finish blocked: no device password set\n");
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            return; // handle()'s trailing client.stop() closes the connection
+        }
+        {
+            InternalStorage::Session session("Wifi", false);
+            InternalStorage::writeBool("provisioned", true);
+        }
+        client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+        client.stop();
+        delay(100);
+        DEBUG_LOG("[INFO] provisioning finished, rebooting into STA\n");
+        ESP.restart();
+    }
+
+    void handleWifiReset(WiFiClient &client)
+    {
+        {
+            InternalStorage::Session session("Wifi", false);
+            InternalStorage::writeBool("provisioned", false);
+        }
+        client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+        client.stop();
+        delay(100);
+        DEBUG_LOG("[INFO] wifi reset, rebooting into AP\n");
+        ESP.restart();
+    }
+
+    void handleProvisionPassword(WiFiClient &client)
+    {
+        StaticJsonDocument<BODY_SIZE> doc;
+        DeserializationError err = deserializeJson(doc, client);
+        const char *pw = doc["password"];
+        if (err || doc["password"].isNull() || strlen(pw) < MIN_PASSWORD_LEN || strlen(pw) > MAX_PASSWORD_LEN)
+        {
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            return;
+        }
+        char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
+        DigestCrypto::computeHa1(pw, ha1, sizeof(ha1));
+        System::storeDeviceHa1(ha1);
+        System::storeDevicePassword(pw);
+        DEBUG_LOG("[INFO] device password updated\n");
+        client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+    }
+
+    void handleProvisionName(WiFiClient &client)
+    {
+        StaticJsonDocument<BODY_SIZE> doc;
+        DeserializationError err = deserializeJson(doc, client);
+        const char *name = doc["name"];
+        // >= (not >) because DEVICE_NAME_LEN includes the '\0' -- a name
+        // that exactly fills the buffer would leave no room for it.
+        if (err || doc["name"].isNull() || strlen(name) == 0 || strlen(name) >= System::DEVICE_NAME_LEN)
+        {
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            return;
+        }
+        System::storeDeviceName(name);
+        DEBUG_LOG("[INFO] device name set to \"%s\"\n", name);
+        client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+    }
+
+    void handleSetSensorName(WiFiClient &client, uint8_t idx)
+    {
+        StaticJsonDocument<BODY_SIZE> doc;
+        DeserializationError err = deserializeJson(doc, client);
+        const char *name = doc["name"];
+        if (err || doc["name"].isNull() || strlen(name) == 0 || strlen(name) >= SensorManager::SENSOR_NAME_LEN || !SensorManager::setSensorName(idx, name))
+        {
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            return;
+        }
+        DEBUG_LOG("[INFO] sensor name on index %d is set to \"%s\"\n", idx, name);
+        client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+    }
+    void handleSetValueOffset(WiFiClient &client, uint8_t idx)
+    {
+        StaticJsonDocument<BODY_SIZE> doc;
+        DeserializationError err = deserializeJson(doc, client);
+        const float value = doc["value"];
+        if (err || doc["value"].isNull() || isnanf(value) || !SensorManager::setValueOffset(idx, value))
+        {
+            client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            return;
+        }
+        DEBUG_LOG("[INFO] sensor offset on index %d is set to \"%f\"\n", idx, value);
+        client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+    }
+
 }
 namespace HttpServer
 {
@@ -190,17 +368,11 @@ namespace HttpServer
             }
         }
         char deviceHa1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
-#ifdef DISABLE_LIGHT_SLEEP
         bool ownPassword = System::getActiveHa1(deviceHa1, sizeof(deviceHa1));
-        Serial.printf("[INFO] %s %s | ha1: %s\n", method, path, ownPassword ? "own" : "default");
-#else
-        System::getActiveHa1(deviceHa1, sizeof(deviceHa1));
-#endif
+        DEBUG_LOG("[INFO] %s %s | ha1: %s\n", method, path, ownPassword ? "own" : "default");
         if (!DigestAuth::verify(requestHeader, method, path, deviceHa1))
         {
-#ifdef DISABLE_LIGHT_SLEEP
-            Serial.println("[WARN] auth failed");
-#endif
+            DEBUG_LOG("[WARN] auth failed\n");
             char wwwAuth[160] = {};
             DigestAuth::buildWwwAuthenticate(wwwAuth, sizeof(wwwAuth));
             client.printf("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", wwwAuth);
@@ -215,9 +387,7 @@ namespace HttpServer
         // by construction (%hhu only matches a path that's actually numeric).
         if (strcmp(method, "GET") == 0 && strcmp(path, "/") == 0)
         {
-            // Page lives in flash (const char[]) -> stream directly, no heap.
-            client.printf("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nContent-Length: %u\r\n\r\n", strlen(PROVISIONING_HTML));
-            client.print(PROVISIONING_HTML);
+            handleRoot(client);
         }
         else if (strcmp(method, "GET") == 0 && strcmp(path, "/sensors") == 0)
         {
@@ -233,143 +403,43 @@ namespace HttpServer
         }
         else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/wifi") == 0)
         {
-            StaticJsonDocument<BODY_SIZE> doc;
-            DeserializationError err = deserializeJson(doc, client);
-            if (err || doc["ssid"].isNull() || doc["password"].isNull())
-            {
-                // Parse error or missing fields: write nothing, one response.
-                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-            }
-            else
-            {
-                const char *ssid = doc["ssid"];
-                const char *pw = doc["password"];
-                bool connected = testStaConnect(ssid, pw);
-#ifdef DISABLE_LIGHT_SLEEP
-                Serial.printf("[INFO] WiFi test-connect ssid=\"%s\": %s\n", ssid, connected ? "ok" : "failed");
-#endif
-                // Only commit to NVS on success — on failure, the old
-                // (working) credentials stay in place, so initWifi() finds
-                // its way back to the old network by itself on the next
-                // reconnect attempt, instead of getting stuck with broken
-                // new data.
-                if (connected)
-                {
-                    InternalStorage::Session session("Wifi", false);
-                    InternalStorage::writeString("ssid", ssid);
-                    InternalStorage::writeString("password", pw);
-                }
-                char body[24] = {};
-                snprintf(body, sizeof(body), "{\"connected\":%s}\n", connected ? "true" : "false");
-                client.printf("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: %d\r\n\r\n", strlen(body));
-                client.print(body);
-            }
+            handleProvisionWifi(client);
         }
         else if (sscanf(requestHeader, "POST /calibrate/%hhu", &sensorIdx) == 1)
         {
-            StaticJsonDocument<BODY_SIZE> doc;
-            DeserializationError err = deserializeJson(doc, client);
-            if (err || !SensorManager::calibrateSensor(sensorIdx, doc.as<JsonObjectConst>()))
-                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-            else
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
+            handleCalibrate(client, sensorIdx);
         }
         else if (sscanf(requestHeader, "POST /reset/%hhu", &sensorIdx) == 1)
         {
-            if (SensorManager::resetSensor(sensorIdx))
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
-            else
-                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+            handleReset(client, sensorIdx);
+        }
+        else if (sscanf(requestHeader, "POST /rename/%hhu", &sensorIdx) == 1)
+        {
+            handleSetSensorName(client, sensorIdx);
+        }
+        else if (sscanf(requestHeader, "POST /valueoffset/%hhu", &sensorIdx) == 1)
+        {
+            handleSetValueOffset(client, sensorIdx);
         }
         else if (strcmp(method, "POST") == 0 && strcmp(path, "/factoryreset") == 0)
         {
-            InternalStorage::erase();
-            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
-            client.stop();
-            delay(100);
-#ifdef DISABLE_LIGHT_SLEEP
-            Serial.println("[INFO] factory reset, rebooting");
-#endif
-            ESP.restart();
+            handleFactoryReset(client);
         }
         else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/finish") == 0)
         {
-            char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
-            if (!System::getActiveHa1(ha1, sizeof(ha1)))
-            {
-#ifdef DISABLE_LIGHT_SLEEP
-                Serial.println("[WARN] finish blocked: no device password set");
-#endif
-                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-                client.stop();
-                return true;
-            }
-            {
-                InternalStorage::Session session("Wifi", false);
-                InternalStorage::writeBool("provisioned", true);
-            }
-            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
-            client.stop();
-            delay(100);
-#ifdef DISABLE_LIGHT_SLEEP
-            Serial.println("[INFO] provisioning finished, rebooting into STA");
-#endif
-            ESP.restart();
+            handleProvisionFinish(client);
         }
         else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/wifi/reset") == 0)
         {
-            {
-                InternalStorage::Session session("Wifi", false);
-                InternalStorage::writeBool("provisioned", false);
-            }
-            client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
-            client.stop();
-            delay(100);
-#ifdef DISABLE_LIGHT_SLEEP
-            Serial.println("[INFO] wifi reset, rebooting into AP");
-#endif
-            ESP.restart();
+            handleWifiReset(client);
         }
         else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/password") == 0)
         {
-            StaticJsonDocument<BODY_SIZE> doc;
-            DeserializationError err = deserializeJson(doc, client);
-            const char *pw = doc["password"];
-            if (err || doc["password"].isNull() || strlen(pw) < MIN_PASSWORD_LEN || strlen(pw) > MAX_PASSWORD_LEN)
-            {
-                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-            }
-            else
-            {
-                char ha1[DigestCrypto::SHA256_HEX_LEN + 1] = {};
-                DigestCrypto::computeHa1(pw, ha1, sizeof(ha1));
-                System::storeDeviceHa1(ha1);
-                System::storeDevicePassword(pw);
-#ifdef DISABLE_LIGHT_SLEEP
-                Serial.println("[INFO] device password updated");
-#endif
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
-            }
+            handleProvisionPassword(client);
         }
         else if (strcmp(method, "POST") == 0 && strcmp(path, "/provision/name") == 0)
         {
-            StaticJsonDocument<BODY_SIZE> doc;
-            DeserializationError err = deserializeJson(doc, client);
-            const char *name = doc["name"];
-            // >= (not >) because DEVICE_NAME_LEN includes the '\0' -- a name
-            // that exactly fills the buffer would leave no room for it.
-            if (err || doc["name"].isNull() || strlen(name) == 0 || strlen(name) >= System::DEVICE_NAME_LEN)
-            {
-                client.print("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-            }
-            else
-            {
-                System::storeDeviceName(name);
-#ifdef DISABLE_LIGHT_SLEEP
-                Serial.printf("[INFO] device name set to \"%s\"\n", name);
-#endif
-                client.print("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 3\r\n\r\n{}\n");
-            }
+            handleProvisionName(client);
         }
         else
         {

@@ -126,7 +126,7 @@ Kalibrierte Werte aller angeschlossenen Sensoren. Jeder Wert trägt seinen eigen
 ```
 
 - Schlüssel immer `sensor:N` (fortlaufend, fix zur Compile-Zeit)
-- `value` ist `float` — kalibrierter Wert (kg, °C, %, etc.)
+- `value` ist `float` — kalibrierter Wert (kg, °C, %, etc.), abzüglich der manuellen Korrektur aus `POST /valueoffset/:idx` (siehe dort)
 - Lesen erfolgt ausschließlich on-demand beim Request, kein Background-Sampling
 
 ### POST /calibrate/:idx
@@ -164,6 +164,30 @@ Setzt die Kalibrierung eines einzelnen Sensors zurück auf scale=1, offset=0 —
 Ermöglicht Neukalibrierung eines einzelnen Sensors ohne die anderen zu beeinflussen.
 
 Response: `200 OK` mit `{}`
+
+### POST /rename/:idx
+Setzt den Anzeigenamen des Sensors mit Index `:idx` — rein kosmetisch, wie `POST /provision/name` auf Geräteebene, nur pro Sensor statt global. Kein Neustart, sofort aktiv.
+
+```json
+{ "name": "Waage Terrasse" }
+```
+
+Response: `200 OK` mit `{}` — `400 Bad Request` wenn `name` fehlt, leer, zu lang (`>= SensorManager::SENSOR_NAME_LEN`) oder `idx` ungültig ist. Persistiert in NVS (Namespace `SensorMeta`, Key `sName<idx>`), NVS-only — kein RAM-Cache, da selten gelesen (nur bei `GET /calibrationinfo`, kein Hot-Path).
+
+**Routen-Namensgebung bewusst `/rename`, nicht `/name`**: `POST /provision/name` (Geräte-Ebene) existiert schon — ein zweites, gleich benanntes `/name/:idx` hätte zwei unterschiedliche Dinge unter demselben Wort geführt. `/rename/:idx` bleibt trotzdem im etablierten flachen Muster von `/calibrate/:idx`/`/reset/:idx` (Verb zuerst, Index danach), keine Verschachtelung wie `/sensors/:idx/name`.
+
+### POST /valueoffset/:idx
+Setzt eine manuelle Korrektur ("Tara") auf den Sensor mit Index `:idx` — wird vom kalibrierten Messwert abgezogen, bevor `GET /sensors` antwortet. Kein Neustart, sofort aktiv.
+
+```json
+{ "value": 2.5 }
+```
+
+Response: `200 OK` mit `{}` — `400 Bad Request` wenn `value` fehlt, keine gültige Zahl ist, oder `idx` ungültig ist.
+
+- **Bewusst getrennt von der eigentlichen Kalibrierung** (`POST /calibrate/:idx`): Die Kalibrierung (Skalierungsfaktor, Sensor-Nullpunkt) bleibt Sensor-intern (`HX711Sensor`, NVS-Namespace `sensor_<pId>`). Die manuelle Korrektur liegt dagegen im `SensorManager` selbst (NVS-Namespace `SensorMeta`, Key `vOffset<idx>`) und gilt **generisch für jeden Sensortyp** — nicht nur für die Waage. Dadurch kein `SensorBase`-Umbau nötig (kein `supportsTara()`-Flag, keine Sensortyp-Sonderbehandlung).
+- `SensorManager::calibrateSensor()`/`resetSensor()` setzen die Korrektur bei Erfolg automatisch auf `0` zurück (RAM + NVS) — eine neue Kalibrierung oder ein Reset macht eine alte manuelle Korrektur ungültig.
+- Anders als der Name **RAM-gecacht** (`SensorEntry::valueOffset`), weil er bei **jedem** `GET /sensors`-Request angewendet wird — der am häufigsten abgefragte Endpoint (2–3s-Polling während Beregnung). Ein NVS-Zugriff pro Request wäre hier ein echtes Timing-Problem, siehe `HX711Sensor`, das Kalibrierwerte aus demselben Grund im Konstruktor lädt statt bei jedem Read.
 
 ### POST /factoryreset
 Löscht alle NVS-Daten (Credentials + Kalibrierung aller Sensoren) und rebootet. Entspricht dem Drücken von GPIO9 beim Boot.
@@ -217,8 +241,10 @@ Beschreibt Sensortyp, Kalibrierungsschritte und die aktuell aktiven Kalibrierwer
 [
   {
     "index": 0,
+    "name": "Waage Terrasse",
     "type": "HX711",
     "unit": "g",
+    "offset": 2.5,
     "steps": [
       { "instruction": "Remove all weight, then confirm", "key": "offset" },
       { "instruction": "Add known weight", "key": "ref_weight", "ref": "ref_weight", "unit": "g" }
@@ -227,14 +253,18 @@ Beschreibt Sensortyp, Kalibrierungsschritte und die aktuell aktiven Kalibrierwer
   },
   {
     "index": 1,
+    "name": "Sensor 1",
     "type": "DHT22_TEMP",
     "unit": "°C",
+    "offset": 0,
     "steps": [],
     "current": {}
   }
 ]
 ```
 
+- `name` — `SensorManager::getSensorName()`, user-gesetzter Anzeigename, Fallback `"Sensor <index>"` falls nie gesetzt. Über `POST /rename/:idx` änderbar, siehe REST-API-Abschnitt dort.
+- `offset` (top-level) — manuelle Korrektur/Tara, `SensorManager::setValueOffset()`. **Nicht zu verwechseln** mit `current.offset` (Sensor-eigener Kalibrier-Nullpunkt, z. B. bei HX711) — beide heißen zufällig gleich, meinen aber unterschiedliche Dinge auf unterschiedlichen Ebenen (Sensor-Kalibrierung vs. nachträgliche Korrektur). Über `POST /valueoffset/:idx` änderbar.
 - `unit` (top-level, pro Sensor-Objekt) — `SensorBase::getUnit()`, z. B. `"g"`, `"°C"`, `"%"`. Nicht zu verwechseln mit dem gleichnamigen `unit`-Feld innerhalb eines `steps`-Eintrags (dort: Einheit des einzugebenden Referenzwerts).
 
 `raw_at_weight` liest der C3 beim `POST /calibrate` selbst — der Client übermittelt nur `offset` und `ref_weight`. `scale` berechnet der C3 aus `(raw_at_weight - offset) / ref_weight`.
@@ -316,8 +346,12 @@ Geräteinformationen — MAC ist persistenter Identifier, zwingend für Onboardi
 | `System` | `name` | string | optionaler, rein kosmetischer Gerätename (AP-SSID/Hostname/Status-Feld) |
 | `sensor_N` | `offset` | long | Tara-Offset (leere Wägeplatte) |
 | `sensor_N` | `scale` | float | Skalierungsfaktor |
+| `SensorMeta` | `sName<N>` | string | User-gesetzter Sensorname, Key-Suffix statt eigener Namespace (siehe unten) |
+| `SensorMeta` | `vOffset<N>` | float | Manuelle Korrektur/Tara (`POST /valueoffset/:idx`), RAM-gecacht in `SensorEntry::valueOffset` |
 
 `N` = Array-Index des Sensors (0, 1, 2, …). `erase()` löscht alle Namespaces.
+
+**`SensorMeta` ist ein einziger, gemeinsamer Namespace** für alle Sensoren, `N` steckt hier im Key-Namen selbst (`sName0`, `vOffset1`, …) — anders als `sensor_N`, wo `N` den Namespace-Namen bildet. Bewusst so: `sensor_N` gehört `HX711Sensor` privat (eigener `_pId`-Namespace pro Instanz, siehe HX711Sensor-Abschnitt); `SensorMeta` gehört dagegen dem `SensorManager` selbst und nutzt dessen eigenen, ohnehin überall vorhandenen `idx` — hat mit dem sensorinternen `_pId`-Schema nichts zu tun, auch wenn beide Werte praktisch identisch sind.
 
 ---
 
@@ -383,13 +417,17 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 ### SensorManager
 `include/SensorManager.h` / `src/SensorManager.cpp` — Namespace, keine Klasse.
 
-- `constexpr uint8_t MAX_SENSORS = 8`
+- `constexpr uint8_t MAX_SENSORS = 4`
+- `constexpr size_t SENSOR_NAME_LEN = 32` — öffentlich, weil `HttpServer.cpp` sie zur Validierung/Puffergröße braucht (analog zu `System::DEVICE_NAME_LEN`)
 - `void initSensors()` — Hardware-Init, kein Rückgabewert (Validierung erfolgt beim Lesen)
-- `bool getSensorDataJson(char* buf, size_t len)` — baut JSON on-demand, gibt false bei Fehler
-- `bool getCalibrationInfoJson(char* buf, size_t len)` — baut das JSON-Array für `GET /calibrationinfo` aus `getCalibrationJson()`/`getCalibrationValuesJson()`/`getUnit()` aller Sensoren
-- `bool calibrateSensor(uint8_t idx, JsonObjectConst data)` / `bool resetSensor(uint8_t idx)` — reichen an den Sensor mit Index `idx` durch, `false` bei ungültigem Index
+- `bool getSensorDataJson(char* buf, size_t len)` — baut JSON on-demand, gibt false bei Fehler; wendet pro Sensor `SensorEntry::valueOffset` auf den gelesenen Wert an, bevor er formatiert wird
+- `bool getCalibrationInfoJson(char* buf, size_t len)` — baut das JSON-Array für `GET /calibrationinfo` aus `getCalibrationJson()`/`getCalibrationValuesJson()`/`getUnit()` aller Sensoren, plus `name` (`getSensorName()`) und `offset` (`SensorEntry::valueOffset`)
+- `bool getSensorName(uint8_t idx, char* buffer, size_t len)` / `bool setSensorName(uint8_t idx, const char* name)` — NVS-only, kein RAM-Cache (siehe `POST /rename/:idx` im REST-API-Abschnitt für die Begründung). `setSensorName()` validiert `idx`-Bounds und Länge selbst (kein doppelter Check in `HttpServer.cpp`) — gleiches Prinzip wie `calibrateSensor()`/`resetSensor()`, die ihren `idx` auch selbst prüfen.
+- `bool setValueOffset(uint8_t idx, float value)` — schreibt zuerst nach NVS, übernimmt den RAM-Wert (`SensorEntry::valueOffset`) nur bei erfolgreichem Schreiben — RAM und NVS können so nicht auseinanderlaufen, wenn der NVS-Schreibvorgang mal fehlschlägt.
+- `bool calibrateSensor(uint8_t idx, JsonObjectConst data)` / `bool resetSensor(uint8_t idx)` — reichen an den Sensor mit Index `idx` durch, `false` bei ungültigem Index; setzen bei Erfolg zusätzlich `valueOffset` auf `0` zurück (`calibrateSensor()` nur im Erfolgsfall, `resetSensor()` unconditional) — eine neue Kalibrierung/ein Reset macht eine alte manuelle Korrektur ungültig
 - Konkrete Sensoren werden in `initSensors()` unconditional instanziiert (HX711 + 2× DHT22) — keine `#ifdef`-Sensorauswahl, siehe PlatformIO-Struktur weiter unten
-- Internes Array `SensorEntry sensorArray[MAX_SENSORS]` (anonymer Namespace) — `SensorEntry` bündelt `SensorBase* sensor` mit dem Typ-String (`type`, für `GET /calibrationinfo`)
+- Internes Array `SensorEntry sensorArray[MAX_SENSORS]` (anonymer Namespace) — `SensorEntry` bündelt `SensorBase* sensor`, Typ-String (`type`) und `float valueOffset` (RAM-Cache der manuellen Korrektur, aus NVS geladen in `addSensor()`)
+- **Name und `valueOffset` liegen bewusst im `SensorManager`, nicht auf dem Sensor-Objekt selbst** — anders als Kalibrierwerte (`HX711Sensor`-intern). Grund: Beide brauchen eine Instanz-Identität (welcher Sensor?) zum Ablegen in NVS, aber `SensorBase` hat bewusst kein `id()` (siehe oben) — der Index käme also entweder von außen als Parameter (macht der Sensor selbst nie autonom) oder gar nicht. Zusätzlich bräuchte `SensorBase` dafür erstmals eine eigene `.cpp` und eine NVS-Abhängigkeit, die aktuell *jeder* Sensor mitschleppen würde, auch die komplett NVS-freien DHT22. Der Manager kennt seinen `idx` ohnehin schon (`calibrateSensor(idx, ...)` etc.) — ihn dort zu verorten kostet keine neue Abhängigkeit.
 
 ### HX711Sensor
 `include/HX711Sensor.h` / `src/HX711Sensor.cpp`
@@ -455,10 +493,11 @@ Konvention: private Member mit `_`-Prefix (`_scale`).
 - `begin()` / `end()` — werden ausschließlich vom WiFiManager aufgerufen, nie direkt. **Idempotent** (mehrfaches `begin()` ist no-op) → kein Listening-Socket-Leak, wenn der STA-Pfad bei Reconnect erneut `begin()`t.
 - `handle()` — in `loop()` aufrufen; nimmt eingehende Verbindung an, liest Header bis `\r\n\r\n` (mit 1,5s-Inaktivitäts-Timeout `REQUEST_READ_TIMEOUT_MS` gegen abgerissene/halb-offene Verbindungen). **Digest-Auth-Gate greift für jede Route, ausnahmslos** — auch `GET /` und AP-Modus, kein Sonderfall mehr für den unprovisionierten Zustand. Holt sich `ha1` über `System::getActiveHa1()`, reicht es an `DigestAuth::verify()` durch; bei Erfolg Routing zum Handler, sonst 401. **Gibt `bool` zurück** (true = Client bedient) — das Sleep-Wach-Fenster in `loop()` bleibt damit wach, solange Requests kommen.
 - Request-Buffer: 1024 Bytes (`BUFFER_SIZE`), Body-Puffer für JSON-Endpoints: 256 Bytes (`BODY_SIZE`)
-- POST `/calibrate`, `/provision/wifi`, `/provision/password`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
+- POST `/calibrate`, `/provision/wifi`, `/provision/password`, `/rename`, `/valueoffset`: Client wird nach Header-Lesen direkt an ArduinoJson-Parser weitergegeben — kein zweiter Buffer für den Body
 - `POST /provision/password` prüft serverseitig eine Mindest-/Maximallänge von 8/63 Zeichen (`MIN_PASSWORD_LEN`/`MAX_PASSWORD_LEN`, WPA2-PSK-Minimum/-Maximum) — nicht nur clientseitig in der GUI, da der Endpoint auch direkt per REST erreichbar ist
-- Debug-Logging (`[INFO]`/`[WARN]`) nur im `DISABLE_LIGHT_SLEEP`-Build (Laufzeit-Logs sind im Sleep-Build ohnehin nicht zuverlässig sichtbar): Methode+Pfad+Ha1-Quelle (`own`/`default`), Auth-Fehlschläge, geblockte Finish-Versuche, erfolgreiche Passwort-/Name-Updates
-- Routing per exaktem `strcmp(method, ...) && strcmp(path, ...)` gegen die schon geparsten `method`/`path`-Puffer (nicht `strstr` auf dem Rohheader) — ein Präfix-Match hätte z. B. `GET /statusXYZ` auf den `/status`-Handler treffen lassen.
+- **`DEBUG_LOG(...)`-Makro** statt verstreuter `#ifdef DISABLE_LIGHT_SLEEP`/`Serial.printf`/`#endif`-Blöcke — expandiert zu `Serial.printf(...)` im Debug-Build, zu nichts im Release/Sleep-Build. Bewusst ein **Makro, keine Funktion**: verschwindet beim Präprozessor komplett, garantiert Null-Overhead im Sleep-Build, statt sich auf Compiler-Wegoptimierung eines No-Op-Funktionsaufrufs zu verlassen. Loggt: Methode+Pfad+Ha1-Quelle (`own`/`default`), Auth-Fehlschläge, geblockte Finish-Versuche, erfolgreiche Passwort-/Name-/Sensor-Name-/Offset-Updates.
+- **Jede Route ist eine eigene, benannte Funktion** im anonymen Namespace (`handleCalibrate`, `handleProvisionWifi`, `handleSetSensorName`, …) — `handle()` selbst ist nur noch Header lesen, `method`/`path` parsen, Auth-Check, dann eine kurze Dispatch-Kette, die pro Route nur eine Zeile aufruft. Reduziert `handle()` von ursprünglich ~240 auf ~90 Zeilen.
+- Routing per exaktem `strcmp(method, ...) && strcmp(path, ...)` gegen die schon geparsten `method`/`path`-Puffer (nicht `strstr` auf dem Rohheader) — ein Präfix-Match hätte z. B. `GET /statusXYZ` auf den `/status`-Handler treffen lassen. Routen mit variablem Index (`/calibrate/:idx`, `/reset/:idx`, `/rename/:idx`, `/valueoffset/:idx`) laufen stattdessen über `sscanf(requestHeader, "POST /rename/%hhu", &sensorIdx)` — exakt, weil `%hhu` nur einen tatsächlich numerischen Pfad matcht.
 
 ### JsonEscape
 `include/JsonEscape.h` / `src/JsonEscape.cpp` — Namespace, keine Klasse.
@@ -520,6 +559,7 @@ Drei Punkte, bewusst abgegrenzt gegen den Rest der Roadmap (siehe "Zurückgestel
    - **Achtung bei Kombination mit Digest Auth**: Betrifft nur den Fertigprodukt-Weg (Selbstbauer kompilieren bei Bedarf ohnehin neu, kein OTA-Konflikt dort). Für Fertigprodukt-Kunden ist das Initial-Passwort individuell pro Gerät vergeben. Ein gemeinsames OTA-Image für mehrere Geräte würde dieses Schema aufbrechen (alle Geräte teilen sich dann denselben kompilierten Fallback-Wert). Lösung dafür bei Bedarf: Initial-Passwort aus MAC + einem gemeinsamen Salt ableiten (HMAC), analog zum bestehenden Realm-Muster — jedes Gerät bleibt eindeutig, kein externer Safe nötig. Nicht vor OTA umsetzen.
 
 ### Kleinere Ergänzungen (additiv, nachrüstbar)
+- **Sensor-Name + manuelle Korrektur (Tara)** — ✅ *Firmware + GUI fertig, Hardwaretest noch offen*. `POST /rename/:idx` (kosmetischer Name, NVS-only) und `POST /valueoffset/:idx` (Korrekturwert, RAM+NVS, wird bei jedem `GET /sensors` abgezogen) — beide im `SensorManager`, nicht auf dem Sensor-Objekt, siehe SensorManager-Abschnitt für die Begründung. GUI: Klick-zum-Bearbeiten direkt an der Sensor-Kartenüberschrift (Name) bzw. einer eigenen Zeile (Korrektur) — kein Save-Button/keine Erfolgsmeldung beim Gerätenamen-Pendant im Header (`toggleDeviceNameEdit()`), da bewusst auf sichtbares Feedback verzichtet wurde (siehe `ProvisioningPage.h`).
 - **GET /calibrationinfo um aktuelle Kalibrierwerte erweitern** — ✅ *Firmware fertig, Hardwaretest noch offen*. Neue virtuelle Methode `getCalibrationValuesJson()` auf `SensorBase` (NVI-Pattern, analog zu `getCalibrationJson()`) — `HX711Sensor` liest `_scale.get_offset()`/`_scale.get_scale()` direkt aus der Live-Instanz (nicht aus NVS, damit immer der tatsächlich aktive Wert zurückkommt), DHT22-Sensoren liefern `{}` (keine Kalibrierung). `SensorManager::getCalibrationInfoJson()` baut daraus das neue `"current"`-Feld pro Sensor. Details siehe REST-API-Abschnitt zu `GET /calibrationinfo`.
 - **Stotterndes GPIO9-Reset-Blinken** — *zurückgestellt, nicht Teil dieser Version*. Ursprünglich auf den blockierenden 5-s-Connect in `initWifi()` zurückgeführt; Hardwaretest zeigt aber: mit `DISABLE_LIGHT_SLEEP` stottert es nicht mehr, Ursache vermutlich Light Sleep statt `initWifi()`. Bestätigungstest mit aktivem Light Sleep steht noch aus.
 - **WLAN-Testconnect bei `POST /provision/wifi` (AP+STA-Concurrent-Modus)** — ✅ *Firmware fertig* (`HttpServer.cpp`, lokale Funktion `testStaConnect()` — bewusst **nicht** in `WiFiManager`, um keinen Include-Zirkel zu erzeugen: `WiFiManager` hängt schon von `HttpServer` ab, um ihn zu starten/stoppen). Merkt sich vor dem Test den Ausgangsmodus und stellt ihn danach in jedem Fall wieder her:

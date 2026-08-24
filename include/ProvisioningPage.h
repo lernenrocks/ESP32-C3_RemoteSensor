@@ -9,9 +9,14 @@
 // logic simple): Status | Password | WiFi | Sensors. Status is the new
 // landing page and works standalone even during live operation (STA,
 // provisioned=true) — device name + system info, no completed onboarding
-// required. Live sensor values + current calibration values deliberately
-// live only in the Sensors tab (no dashboard here, the Companion App will
-// handle that later). No separate Finish tab anymore — instead a banner in
+// required. Live sensor values + current calibration values live inside
+// their own sensor cards in the Sensors tab, not pulled into one separate
+// overview screen. Previously framed as "no dashboard here, the Companion
+// App will handle that later" -- revised now that the node is meant to work
+// standalone long-term, not just as a MainUnit-only accessory pending a
+// future app (see browser tab title, "... Monitor"). This page is
+// increasingly the primary, ongoing interface, not just a one-time
+// provisioning step. No separate Finish tab anymore — instead a banner in
 // the Status tab that only appears while provisioned=false ("Finish &
 // Reboot" would be harmless to click again during live operation anyway,
 // but the banner isn't visible then at all).
@@ -24,7 +29,8 @@ inline const char PROVISIONING_HTML[] = R"html(<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SensorNode Setup</title>
+<title></title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127807;</text></svg>">
 <style>
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#eef1ef;color:#1f2b22;display:flex;justify-content:center;padding:24px}
@@ -48,6 +54,8 @@ button:disabled{opacity:.5;cursor:default}
 .unitrow{display:flex;align-items:center;gap:8px;margin-top:4px}
 .unitrow input{flex:1}
 .unitrow button{width:auto;margin-top:0}
+.unitrow.small input{padding:6px 8px;font-size:12px}
+.unitrow.small button{padding:6px 10px;font-size:12px}
 .unit{font-size:13px;color:#516056}
 .captured{display:block;font-size:12px;color:#2e9e5b;margin-top:4px}
 .msg{font-size:13px;margin-top:12px;min-height:16px}
@@ -65,7 +73,13 @@ button:disabled{opacity:.5;cursor:default}
 .setupBannerTitle{font-weight:600;margin-bottom:6px}
 </style></head><body>
 <div class="card">
-  <h1>&#127807; <span id="headerName">SensorNode</span><button class="headerRefresh" onclick="manualRefresh()" title="Refresh">&#8635;</button></h1>
+  <h1><span onclick="toggleDeviceNameEdit()" style="cursor:pointer">&#127807; <span id="headerName"></span>&#9998;</span><button class="headerRefresh" onclick="manualRefresh()" title="Refresh">&#8635;</button></h1>
+  <div id="devnameEdit" style="display:none">
+    <div class="unitrow small">
+      <input id="devname" autocomplete="off" maxlength="31">
+      <button class="primary" onclick="saveDeviceName()">Save</button>
+    </div>
+  </div>
   <div class="tabs">
     <button id="t0" class="active" onclick="tab(0)">Status</button>
     <button id="t1" onclick="tab(1)">Password</button>
@@ -80,12 +94,6 @@ button:disabled{opacity:.5;cursor:default}
       <button class="primary" id="finishBtn" onclick="finish()" style="display:none">Finish &amp; Reboot</button>
       <div id="finMsg" class="msg"></div>
     </div>
-    <label>Device name (max. 31 characters)</label>
-    <div class="unitrow">
-      <input id="devname" autocomplete="off" maxlength="31">
-      <button class="primary" onclick="saveDeviceName()">Save</button>
-    </div>
-    <div id="nameMsg" class="msg"></div>
     <div class="sectionTitle">System Info</div>
     <div id="statusGrid" class="statusGrid"><div class="muted">Loading&hellip;</div></div>
   </div>
@@ -155,6 +163,7 @@ async function loadStatus(){
     var d=await (await fetch('/status')).json();
     var hn=document.getElementById('headerName');
     if(hn) hn.textContent=d.device_name;
+    document.title=d.device_name+' – Monitor';
     var nameInput=document.getElementById('devname');
     if(nameInput && document.activeElement!==nameInput) nameInput.value=d.device_name;
     var banner=document.getElementById('setupBanner');
@@ -189,15 +198,19 @@ async function loadWifiStatus(){
       '<div>RSSI</div><div>'+d.rssi+' dBm</div>';
   }catch(e){g.innerHTML='<div class="err">Status not reachable</div>';}
 }
-
+var editingDeviceName = false;
 async function saveDeviceName(){
   var name=document.getElementById('devname').value;
-  var m=document.getElementById('nameMsg');
-  if(!name){msg(m,'Name required',false);return;}
+  if(!name)return;
   try{
     var r=await fetch('/provision/name',{method:'POST',body:JSON.stringify({name:name})});
-    msg(m,r.ok?'Saved ✓':'Error ('+r.status+')',r.ok);
-  }catch(e){msg(m,'Connection failed',false);}
+    if(r.ok){
+      document.getElementById('headerName').textContent=name;
+      document.title=name+' – Monitor';
+      editingDeviceName=false;
+      document.getElementById('devnameEdit').style.display='none';
+    }
+  }catch(e){}
 }
 
 async function savePassword(){
@@ -227,6 +240,10 @@ async function saveWifi(){
   }catch(e){msg(m,'Connection interrupted — the node may already have switched networks, check the Status tab',false);}
 }
 
+function toggleDeviceNameEdit(){
+  editingDeviceName = ! editingDeviceName;
+  document.getElementById('devnameEdit').style.display = editingDeviceName ? 'block':'none';
+}
 var collected={};
 var sensorUnits={}; // cached from /calibrationinfo — /sensors doesn't include the unit on every poll
 var expandedSensors={}; // remembers open/closed state across loadCalibrationInfo() rebuilds
@@ -242,18 +259,82 @@ async function startCalibration(idx){
   if(m) msg(m, ok?'Reset ✓ — sensor now at raw values':'Reset failed', ok);
   refreshLiveValues();
 }
+var editingName={}; // per sensor: name field currently open for editing
+var editingOffset={}; // per sensor: correction (valueOffset) field currently open for editing
+var lastSensorInfo=[]; // cached /calibrationinfo result -- toggling edit mode re-renders from here, no re-fetch needed
+function findSensorInfo(idx){
+  for(var i=0;i<lastSensorInfo.length;i++){ if(lastSensorInfo[i].index==idx) return lastSensorInfo[i]; }
+  return null;
+}
+// Each field renders into its own stable container (namefield_/offsetfield_)
+// instead of rebuilding the whole card -- toggling one field must not touch
+// whatever's currently being typed into the other, unsaved field.
+function renderNameField(idx){
+  var s=findSensorInfo(idx), el=document.getElementById('namefield_'+idx);
+  if(!s||!el) return;
+  if(editingName[idx]){
+    el.innerHTML='<div class="unitrow small"><input id="sname_'+idx+'" value="'+(s.name||'')+'" maxlength="31"><button class="primary" onclick="saveSensorName('+idx+')">Save</button></div>';
+  }else{
+    el.innerHTML='<h3 onclick="toggleEditName('+idx+')" style="cursor:pointer">'+(s.name||'Sensor '+idx)+' &#9998;</h3>';
+  }
+}
+function renderOffsetField(idx){
+  var s=findSensorInfo(idx), el=document.getElementById('offsetfield_'+idx);
+  if(!s||!el) return;
+  if(editingOffset[idx]){
+    el.innerHTML='<div class="unitrow small"><input type="number" id="soffset_'+idx+'" value="'+s.offset+'"><button class="primary" onclick="saveSensorOffset('+idx+')">Save</button></div>';
+  }else{
+    el.innerHTML='<span onclick="toggleEditOffset('+idx+')" style="cursor:pointer">Correction: '+s.offset+' &#9998;</span>';
+  }
+}
+function toggleEditName(idx){ editingName[idx]=!editingName[idx]; renderNameField(idx); }
+function toggleEditOffset(idx){ editingOffset[idx]=!editingOffset[idx]; renderOffsetField(idx); }
+
+async function saveSensorName(idx){
+  var name=document.getElementById('sname_'+idx).value;
+  if(!name)return;
+  try{
+    var r=await fetch('/rename/'+idx,{method:'POST',body:JSON.stringify({name:name})});
+    if(r.ok){
+      var s=findSensorInfo(idx);
+      if(s) s.name=name; // update local cache directly -- avoids a reload that would also disturb any other field mid-edit
+      editingName[idx]=false;
+      renderNameField(idx);
+    }
+  }catch(e){}
+}
+async function saveSensorOffset(idx){
+  var value=parseFloat(document.getElementById('soffset_'+idx).value);
+  if(isNaN(value))return; // e.g. field left empty, or something unparseable pasted in
+  try{
+    var r=await fetch('/valueoffset/'+idx,{method:'POST',body:JSON.stringify({value:value})});
+    if(r.ok){
+      var s=findSensorInfo(idx);
+      if(s) s.offset=value;
+      editingOffset[idx]=false;
+      renderOffsetField(idx);
+    }
+  }catch(e){}
+}
+
 async function loadCalibrationInfo(){
   var box=document.getElementById('sensors');
-  var info;
-  try{info=await (await fetch('/calibrationinfo')).json();}
+  try{lastSensorInfo=await (await fetch('/calibrationinfo')).json();}
   catch(e){box.innerHTML='<div class="err">Could not load sensor info</div>';return;}
+  renderSensors();
+}
+function renderSensors(){
+  var box=document.getElementById('sensors');
   box.innerHTML='';
-  info.forEach(function(s){
+  lastSensorInfo.forEach(function(s){
     collected[s.index]={};
     sensorUnits[s.index]=s.unit||'';
 
     var el=document.createElement('div');el.className='sensor';el.id='sensorcard_'+s.index;
-    var h='<h3>Sensor '+s.index+'</h3><div class="type">'+s.type+'</div>';
+    var h='';
+    h+='<div id="namefield_'+s.index+'"></div>';
+    h+='<div class="type">Sensor '+s.index+': '+s.type+'</div>';
+    h+='<div id="offsetfield_'+s.index+'"></div>';
     h+='<div>Live: <span class="live" id="live_calib_'+s.index+'">&ndash;</span></div>';
     if(!s.steps||!s.steps.length){
       h+='<div class="muted">No calibration needed</div>';
@@ -282,6 +363,7 @@ async function loadCalibrationInfo(){
       h+='</div>';
     }
     el.innerHTML=h;box.appendChild(el);
+    renderNameField(s.index);renderOffsetField(s.index); // containers must exist in the DOM first
   });
 }
 

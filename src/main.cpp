@@ -5,7 +5,7 @@
 #include "InternalStorage.h"
 #include "esp_sleep.h"
 
-extern const char FIRMWARE_VERSION[] = "0.1.0";
+extern const char FIRMWARE_VERSION[] = "1.0.0";
 constexpr unsigned long FACTORY_RESET_TRESHOLD = 5000UL;
 
 // Counts completed Light Sleep/wake cycles. Output in GET /status — makes
